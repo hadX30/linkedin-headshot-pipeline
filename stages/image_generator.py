@@ -163,13 +163,14 @@ class MockImageGenerator:
         style_reference_paths: list[str] | None = None,
         param_overrides: dict | None = None,
     ) -> str:
-        import shutil
+        from PIL import Image
 
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         output_path = os.path.join(OUTPUT_DIR, output_filename)
 
-        # Simply copy the input as "generated" for pipeline testing
-        shutil.copy2(face_image_path, output_path)
+        # Save as PNG so the output path matches bytes (validator uses extension for MIME)
+        with Image.open(face_image_path) as img:
+            img.save(output_path, format="PNG")
         print(f"  [Stage 3 MOCK] Copied input to: {output_path}")
         print(f"  [Stage 3 MOCK] Prompt length: {len(prompt)} chars")
 

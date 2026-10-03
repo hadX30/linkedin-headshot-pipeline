@@ -14,7 +14,7 @@ REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
 
 # ── Model Settings ────────────────────────────────────────────────────────────
 # Stages 1, 2, 4 use Claude Sonnet for analysis and prompt generation
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-4-6"
 
 # Stage 3: face-preserving image generation via Replicate
 # Options: "zsxkib/instant-id" or "lucataco/flux-dev-multi-lora" etc.
