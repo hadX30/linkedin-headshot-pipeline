@@ -10,31 +10,22 @@ load_dotenv()
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 # ── Model Settings ────────────────────────────────────────────────────────────
 # Stages 1, 2, 4 use Claude Sonnet for analysis and prompt generation
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
-# Stage 3: face-preserving image generation via Replicate
-# Options: "zsxkib/instant-id" or "lucataco/flux-dev-multi-lora" etc.
-REPLICATE_MODEL = "zsxkib/instant-id:a]2b5bdc0e1b7b20ebbcb3a2aff1deb0d0a1b3b4c5d6e7f8a9b0c1d2e3f4a5b6"
+# Stage 3: face-preserving image generation via OpenAI
+OPENAI_IMAGE_MODEL = "gpt-image-1"
 
 # ── Generation Parameters ─────────────────────────────────────────────────────
 GENERATION_PARAMS = {
-    "face_id_scale": 0.85,        # How strongly the face is locked (0.6-0.95)
-    "ip_adapter_scale": 0.7,      # How much style references influence output (0.5-0.9)
-    "controlnet_conditioning_scale": 0.8,
-    "guidance_scale": 5.0,        # How closely model follows prompt (3.0-8.0)
-    "num_inference_steps": 30,    # Quality vs speed (20-50)
-    "width": 1024,
-    "height": 1024,
-    "seed": -1,                   # -1 = random
-    "negative_prompt": (
-        "cartoon, painting, illustration, drawing, anime, 3d render, "
-        "plastic skin, smooth skin, airbrushed, overexposed, underexposed, "
-        "blurry, deformed, extra fingers, extra limbs, distorted face, doll-like"
-    ),
+    "size": "1024x1024",          # Output dimensions (1024x1024, 1536x1024, 1024x1536)
+    "quality": "medium",          # Quality tier: low (~$0.02), medium (~$0.07), high (~$0.19)
+    "output_format": "png",       # Output format: png, jpeg, webp
+    "input_fidelity": "high",     # How closely the output preserves source features (high = face lock)
+    "n": 1,                       # Number of images to generate
 }
 
 # ── Validation Thresholds ─────────────────────────────────────────────────────

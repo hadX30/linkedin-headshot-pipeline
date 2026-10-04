@@ -1,54 +1,31 @@
 """
 Stage 3: Image Generator
-Sends the tailored prompt + face reference photo to a face-preserving
-image generation model via the Replicate API.
+Sends the tailored prompt + source photo to OpenAI's GPT Image API
+for face-preserving professional headshot generation.
+
+Uses the images.edit() endpoint — the source photo is passed as the
+reference image so the model preserves facial features, and the prompt
+describes the professional transformation to apply.
 """
 
 import os
 import base64
-import time
-import httpx
-import replicate
+
+from openai import OpenAI
 
 from config import (
-    REPLICATE_API_TOKEN,
+    OPENAI_API_KEY,
+    OPENAI_IMAGE_MODEL,
     GENERATION_PARAMS,
-    REFERENCE_IMAGES,
     OUTPUT_DIR,
 )
 
 
 class ImageGenerator:
-    """Generates a professional headshot using a face-preserving model on Replicate."""
+    """Generates a professional headshot using OpenAI's GPT Image API."""
 
     def __init__(self):
-        os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
-        self.client = replicate.Client(api_token=REPLICATE_API_TOKEN)
-
-    def _image_to_data_uri(self, image_path: str) -> str:
-        """Convert an image file to a data URI for the Replicate API."""
-        ext = image_path.lower().rsplit(".", 1)[-1]
-        mime_map = {
-            "jpg": "image/jpeg",
-            "jpeg": "image/jpeg",
-            "png": "image/png",
-            "webp": "image/webp",
-        }
-        mime = mime_map.get(ext, "image/jpeg")
-
-        with open(image_path, "rb") as f:
-            data = base64.standard_b64encode(f.read()).decode("utf-8")
-
-        return f"data:{mime};base64,{data}"
-
-    def _download_image(self, url: str, output_path: str) -> str:
-        """Download an image from a URL and save to disk."""
-        with httpx.Client(timeout=120) as client:
-            response = client.get(url)
-            response.raise_for_status()
-            with open(output_path, "wb") as f:
-                f.write(response.content)
-        return output_path
+        self.client = OpenAI(api_key=OPENAI_API_KEY)
 
     def generate(
         self,
@@ -66,8 +43,9 @@ class ImageGenerator:
             face_image_path: Path to the original uploaded photo (face reference).
             output_filename: Name for the output file.
             style_reference_paths: Optional paths to studio reference images.
+                                   (Currently unused — reserved for future multi-image support.)
             param_overrides: Optional dict to override default generation params
-                             (e.g., {"face_id_scale": 0.9} on retry).
+                             (e.g., {"quality": "high"} for a retry).
 
         Returns:
             Path to the generated headshot image.
@@ -80,68 +58,33 @@ class ImageGenerator:
         if param_overrides:
             params.update(param_overrides)
 
-        # Prepare the face reference image
-        face_uri = self._image_to_data_uri(face_image_path)
-
-        # Use style references if provided, otherwise fall back to configured ones
-        style_refs = style_reference_paths or REFERENCE_IMAGES
-        style_uris = [self._image_to_data_uri(p) for p in style_refs[:3]]
-
-        # ── Call the Replicate API ────────────────────────────────────────
-        # The exact input schema depends on which model is deployed.
-        # This is structured for InstantID on Replicate — the most common
-        # face-preserving model available there.
-        #
-        # When switching models (e.g., to Flux + PuLID or fal.ai),
-        # only this method needs to change.
-
-        input_payload = {
-            "prompt": prompt,
-            "negative_prompt": params["negative_prompt"],
-            "image": face_uri,               # face reference
-            "width": params["width"],
-            "height": params["height"],
-            "guidance_scale": params["guidance_scale"],
-            "num_inference_steps": params["num_inference_steps"],
-            "ip_adapter_scale": params["ip_adapter_scale"],
-            "controlnet_conditioning_scale": params["controlnet_conditioning_scale"],
-        }
-
-        # Add seed if not random
-        if params.get("seed", -1) != -1:
-            input_payload["seed"] = params["seed"]
-
-        # Add style reference if available
-        if style_uris:
-            # Some models accept a second image input for style reference
-            input_payload["pose_image"] = style_uris[0]
-
-        print(f"  [Stage 3] Sending to Replicate (InstantID)...")
-        print(f"  [Stage 3] Params: face_id={params['face_id_scale']}, "
-              f"ip_adapter={params['ip_adapter_scale']}, "
-              f"guidance={params['guidance_scale']}, "
-              f"steps={params['num_inference_steps']}")
+        print(f"  [Stage 3] Sending to OpenAI ({OPENAI_IMAGE_MODEL})...")
+        print(f"  [Stage 3] Params: quality={params['quality']}, "
+              f"size={params['size']}, "
+              f"fidelity={params.get('input_fidelity', 'high')}")
 
         try:
-            # Run the model
-            # Using the generic replicate.run() which handles polling
-            output = self.client.run(
-                "zsxkib/instant-id:a]2b5bdc0e1b7b20ebbcb3a2aff1deb0d0a1b3b4c5d6e7f8a9b0c1d2e3f4a5b6",
-                input=input_payload,
-            )
+            # Open the source photo and send it to the edit endpoint.
+            # images.edit() preserves the source image's content (face, pose)
+            # while applying the transformations described in the prompt.
+            with open(face_image_path, "rb") as img_file:
+                result = self.client.images.edit(
+                    model=OPENAI_IMAGE_MODEL,
+                    image=img_file,
+                    prompt=prompt,
+                    size=params["size"],
+                    quality=params["quality"],
+                    n=params.get("n", 1),
+                )
 
-            # Output is typically a URL or list of URLs
-            if isinstance(output, list):
-                image_url = str(output[0])
-            elif hasattr(output, "url"):
-                image_url = output.url
-            else:
-                image_url = str(output)
+            # Decode the base64 response and save to disk
+            image_base64 = result.data[0].b64_json
+            image_bytes = base64.b64decode(image_base64)
 
-            # Download the generated image
-            self._download_image(image_url, output_path)
+            with open(output_path, "wb") as f:
+                f.write(image_bytes)
+
             print(f"  [Stage 3] Generated image saved to: {output_path}")
-
             return output_path
 
         except Exception as e:
@@ -163,14 +106,13 @@ class MockImageGenerator:
         style_reference_paths: list[str] | None = None,
         param_overrides: dict | None = None,
     ) -> str:
-        from PIL import Image
+        import shutil
 
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         output_path = os.path.join(OUTPUT_DIR, output_filename)
 
-        # Save as PNG so the output path matches bytes (validator uses extension for MIME)
-        with Image.open(face_image_path) as img:
-            img.save(output_path, format="PNG")
+        # Simply copy the input as "generated" for pipeline testing
+        shutil.copy2(face_image_path, output_path)
         print(f"  [Stage 3 MOCK] Copied input to: {output_path}")
         print(f"  [Stage 3 MOCK] Prompt length: {len(prompt)} chars")
 
