@@ -140,9 +140,9 @@ def run_pipeline(
 
     # ── Stage 3 + 4: Generate → Validate → Retry Loop ────────────────────
     if mock_generation:
-        img_generator = MockImageGenerator()
+        img_generator = MockImageGenerator(output_dir=out_dir)
     else:
-        img_generator = ImageGenerator()
+        img_generator = ImageGenerator(output_dir=out_dir)
 
     validator = QualityValidator()
     current_prompt = prompt

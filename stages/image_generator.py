@@ -24,8 +24,9 @@ from config import (
 class ImageGenerator:
     """Generates a professional headshot using OpenAI's GPT Image API."""
 
-    def __init__(self):
+    def __init__(self, output_dir: str | None = None):
         self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.output_dir = output_dir or OUTPUT_DIR
 
     def generate(
         self,
@@ -50,8 +51,8 @@ class ImageGenerator:
         Returns:
             Path to the generated headshot image.
         """
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        output_path = os.path.join(OUTPUT_DIR, output_filename)
+        os.makedirs(self.output_dir, exist_ok=True)
+        output_path = os.path.join(self.output_dir, output_filename)
 
         # Merge default params with any overrides
         params = {**GENERATION_PARAMS}
@@ -98,6 +99,9 @@ class MockImageGenerator:
     the pipeline can be tested end-to-end.
     """
 
+    def __init__(self, output_dir: str | None = None):
+        self.output_dir = output_dir or OUTPUT_DIR
+
     def generate(
         self,
         prompt: str,
@@ -108,8 +112,8 @@ class MockImageGenerator:
     ) -> str:
         import shutil
 
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        output_path = os.path.join(OUTPUT_DIR, output_filename)
+        os.makedirs(self.output_dir, exist_ok=True)
+        output_path = os.path.join(self.output_dir, output_filename)
 
         # Simply copy the input as "generated" for pipeline testing
         shutil.copy2(face_image_path, output_path)
