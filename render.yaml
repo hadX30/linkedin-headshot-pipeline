@@ -1,0 +1,37 @@
+# Render Blueprint for the headshot API.
+# Render dashboard -> New -> Blueprint -> pick this repository. Values with `sync: false`
+# are asked for once, at creation; set or change them later under the service's Environment.
+services:
+  - type: web
+    name: malameh-headshot-api
+    runtime: python
+    plan: free            # sleeps after inactivity and wakes on the next request; pick a paid plan for always-on
+    region: singapore     # nearest Render region to the Supabase project (AWS ap-south-1)
+    buildCommand: pip install -r requirements.txt
+    # Trust Render's proxy so rate limiting sees each visitor's own IP, not the proxy's.
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.6"
+      # live for production (needs the two model keys below); mock to try the deployment for free.
+      - key: HEADSHOT_MODE
+        sync: false
+      # Render's disk is wiped on every deploy and restart, so traces and images must live in Supabase.
+      - key: TRACE_STORE
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: https://malameh-site.vercel.app
+      - key: CORS_ORIGIN_REGEX
+        value: https://malameh-site(-[a-z0-9-]+)?\.vercel\.app
+      # Needed for live mode.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

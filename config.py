@@ -1,45 +1,31 @@
 """
-Configuration for the LinkedIn Headshot Pipeline.
-All API keys are loaded from environment variables.
+Configuration for the LinkedIn Headshot Pipeline (original module, kept for imports).
+All values now come from headshot.settings (environment variables / .env).
 """
 
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
+from headshot.settings import Settings
+
+_settings = Settings.from_env()
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+ANTHROPIC_API_KEY = _settings.anthropic_api_key
+OPENAI_API_KEY = _settings.openai_api_key
 
 # ── Model Settings ────────────────────────────────────────────────────────────
-# Stages 1, 2, 4 use Claude Sonnet for analysis and prompt generation
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
-
-# Stage 3: face-preserving image generation via OpenAI
-OPENAI_IMAGE_MODEL = "gpt-image-1"
+CLAUDE_MODEL = _settings.claude_model
+OPENAI_IMAGE_MODEL = _settings.image_model
 
 # ── Generation Parameters ─────────────────────────────────────────────────────
-GENERATION_PARAMS = {
-    "size": "1024x1024",          # Output dimensions (1024x1024, 1536x1024, 1024x1536)
-    "quality": "medium",          # Quality tier: low (~$0.02), medium (~$0.07), high (~$0.19)
-    "output_format": "png",       # Output format: png, jpeg, webp
-    "input_fidelity": "high",     # How closely the output preserves source features (high = face lock)
-    "n": 1,                       # Number of images to generate
-}
+GENERATION_PARAMS = dict(_settings.generation_params)
 
 # ── Validation Thresholds ─────────────────────────────────────────────────────
-VALIDATION_THRESHOLDS = {
-    "face_match": 85,
-    "attire_accuracy": 90,
-    "background": 95,
-    "realism": 80,
-    # cultural_sensitivity is pass/fail — no numeric threshold
-}
+VALIDATION_THRESHOLDS = dict(_settings.thresholds)
 
 # ── Pipeline Settings ─────────────────────────────────────────────────────────
-MAX_RETRIES = 3
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
+MAX_RETRIES = _settings.max_retries
+OUTPUT_DIR = str(_settings.output_dir)
 REFERENCE_IMAGES_DIR = os.path.join(os.path.dirname(__file__), "reference_images")
 
 # ── Reference Image Paths (populated at runtime) ─────────────────────────────

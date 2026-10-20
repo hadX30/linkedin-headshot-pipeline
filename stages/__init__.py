@@ -1,4 +1,4 @@
-"""Pipeline stages for the LinkedIn Headshot Generator."""
+"""Pipeline stages for the LinkedIn Headshot Generator (original import paths)."""
 
 from .analyzer import PhotoAnalyzer
 from .prompt_generator import PromptGenerator
