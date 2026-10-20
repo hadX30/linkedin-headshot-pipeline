@@ -9,8 +9,12 @@ __pycache__/
 .venv/
 venv/
 
-# Pipeline output
+# Pipeline output: traces, uploaded photos and generated images (private data)
 output/
+data/
+
+# Tooling
+.pytest_cache/
 
 # OS
 .DS_Store

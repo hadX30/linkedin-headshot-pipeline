@@ -1,0 +1,504 @@
+{
+  "info": {
+    "name": "Malameh headshot pipeline",
+    "_postman_id": "8f3e5f0a-6d0b-4e7e-9a51-6f1c2f6b2c10",
+    "description": "Put adminToken, anthropicApiKey and openaiApiKey in a Postman Environment as secret values, not in this collection.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1 · Pipeline API (traced, free in mock mode)",
+      "description": "Your FastAPI server. Every call here is recorded in the /admin dashboard with prompts, tokens and cost. In mock mode nothing is billed.",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Config (mode, thresholds)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "config"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Create run (upload photo)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/runs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "runs"
+              ]
+            },
+            "description": "Pick a JPEG/PNG/WebP in the `image` field. Saves the new run id into {{runId}}.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "scenario",
+                  "value": "retry_then_deliver",
+                  "type": "text",
+                  "disabled": true,
+                  "description": "Mock mode only: deliver, retry_then_deliver, manual_review, exhausted, rejected, generation_retry, generation_error"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.run_id) pm.collectionVariables.set('runId', body.run_id);",
+                  "pm.test('accepted', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get run (poll until final)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/runs/{{runId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "runs",
+                "{{runId}}"
+              ]
+            },
+            "description": "Send every 1-2 s until status is delivered, manual_review, rejected or error."
+          }
+        },
+        {
+          "name": "Get delivered image",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/runs/{{runId}}/image",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "runs",
+                "{{runId}}",
+                "image"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 · Admin API (Bearer ADMIN_TOKEN)",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{adminToken}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Overview: costs and stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/overview?days=30",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "api",
+                "overview?days=30"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "List runs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/runs?limit=25",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "api",
+                "runs?limit=25"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Run detail: every prompt, response, token, cost",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/runs/{{runId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "api",
+                "runs",
+                "{{runId}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Test run (choose mode and scenario)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/runs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "api",
+                "runs"
+              ]
+            },
+            "description": "mode=live calls Claude + OpenAI and is billed (needs both keys in .env).",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "mode",
+                  "value": "mock",
+                  "type": "text"
+                },
+                {
+                  "key": "scenario",
+                  "value": "auto",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.run_id) pm.collectionVariables.set('runId', body.run_id);",
+                  "pm.test('accepted', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Switch mode (mock / live)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/settings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "api",
+                "settings"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"mock\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Delete run",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/runs/{{runId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "api",
+                "runs",
+                "{{runId}}"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 · Providers directly (billed, NOT traced)",
+      "description": "Straight to Anthropic and OpenAI with your own keys. Useful to try prompts; nothing appears in the dashboard.",
+      "item": [
+        {
+          "name": "Claude: ping",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicApiKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://api.anthropic.com/v1/messages",
+              "host": [
+                "https:"
+              ],
+              "path": [
+                "api.anthropic.com",
+                "v1",
+                "messages"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one short sentence: are you reachable?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Claude: describe a photo by URL",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicApiKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://api.anthropic.com/v1/messages",
+              "host": [
+                "https:"
+              ],
+              "path": [
+                "api.anthropic.com",
+                "v1",
+                "messages"
+              ]
+            },
+            "description": "Set {{photoUrl}} to a public image URL. The response's usage block shows the tokens you were billed for.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-5-5\",\n  \"max_tokens\": 4096,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"{{photoUrl}}\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this person's headwear and clothing precisely, and the photo's lighting and background. Do not identify the person.\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "OpenAI: image edit (low quality = cheapest)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiApiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "https://api.openai.com/v1/images/edits",
+              "host": [
+                "https:"
+              ],
+              "path": [
+                "api.openai.com",
+                "v1",
+                "images",
+                "edits"
+              ]
+            },
+            "description": "Open the Visualize tab to see the image; the console logs token usage.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "model",
+                  "value": "gpt-image-2.5-sunburst",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Retouch this photo into a professional LinkedIn headshot: warm light grey studio backdrop, soft studio lighting, head-and-shoulders crop. Keep the face, facial hair and any traditional attire exactly as they are.",
+                  "type": "text"
+                },
+                {
+                  "key": "size",
+                  "value": "1024x1024",
+                  "type": "text"
+                },
+                {
+                  "key": "quality",
+                  "value": "low",
+                  "type": "text"
+                },
+                {
+                  "key": "output_format",
+                  "value": "png",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "const b64 = d.data && d.data[0] && d.data[0].b64_json;",
+                  "if (b64) pm.visualizer.set('<img src=\"data:image/png;base64,{{b64}}\" style=\"max-width:100%\">', { b64 });",
+                  "console.log('usage', JSON.stringify(d.usage));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "runId",
+      "value": ""
+    },
+    {
+      "key": "adminToken",
+      "value": ""
+    },
+    {
+      "key": "anthropicApiKey",
+      "value": ""
+    },
+    {
+      "key": "openaiApiKey",
+      "value": ""
+    },
+    {
+      "key": "photoUrl",
+      "value": ""
+    }
+  ]
+}

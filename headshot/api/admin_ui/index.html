@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Malameh Traces</title>
+  <link rel="stylesheet" href="/admin/static/admin.css">
+</head>
+<body>
+  <!-- Token gate -->
+  <main id="gate" class="gate" hidden>
+    <form id="gateForm" class="gate-card">
+      <h1>Malameh traces</h1>
+      <p class="muted">Enter the admin token set as <code>ADMIN_TOKEN</code> on the API.</p>
+      <label class="field">
+        <span>Admin token</span>
+        <input id="gateToken" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="gateError" class="form-error" role="alert"></p>
+      <button class="btn btn-primary" type="submit">Open dashboard</button>
+    </form>
+  </main>
+
+  <!-- Dashboard -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="wrap topbar-inner">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>Malameh traces</span>
+        </div>
+        <div class="topbar-actions">
+          <span id="storeBadge" class="chip" title="Trace store"></span>
+          <div class="segmented" role="radiogroup" aria-label="Pipeline mode">
+            <button type="button" role="radio" data-mode="mock">Mock</button>
+            <button type="button" role="radio" data-mode="live">Live</button>
+          </div>
+          <button id="signOut" class="btn btn-ghost" type="button">Sign out</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap page">
+      <p id="modeNote" class="banner" hidden></p>
+
+      <!-- Filter row: scopes every number below -->
+      <div class="toolbar">
+        <div class="segmented" role="radiogroup" aria-label="Period" id="period">
+          <button type="button" role="radio" data-days="7">Last 7 days</button>
+          <button type="button" role="radio" data-days="30">Last 30 days</button>
+          <button type="button" role="radio" data-days="90">Last 90 days</button>
+        </div>
+        <button id="newRun" class="btn btn-primary" type="button">New test run</button>
+      </div>
+
+      <section id="tiles" class="tiles" aria-label="Summary"></section>
+
+      <div class="grid-2">
+        <section class="card">
+          <header class="card-head">
+            <div>
+              <h2>Daily cost</h2>
+              <p class="muted small">Live is billed spend. Mock is what the same calls would have cost.</p>
+            </div>
+            <div class="segmented segmented-sm" role="radiogroup" aria-label="Daily cost view" id="dailyView">
+              <button type="button" role="radio" data-view="chart">Chart</button>
+              <button type="button" role="radio" data-view="table">Table</button>
+            </div>
+          </header>
+          <div class="legend" id="dailyLegend">
+            <span class="legend-item"><i class="swatch s1"></i>Live</span>
+            <span class="legend-item"><i class="swatch s2"></i>Mock (estimated)</span>
+          </div>
+          <div id="dailyChart" class="chart"></div>
+          <div id="dailyTable" class="table-wrap" hidden></div>
+        </section>
+
+        <section class="card">
+          <header class="card-head">
+            <div>
+              <h2>Cost by stage</h2>
+              <p class="muted small">Every provider call in the period, grouped by pipeline stage.</p>
+            </div>
+          </header>
+          <div id="stageTable" class="table-wrap"></div>
+        </section>
+      </div>
+
+      <section class="card">
+        <header class="card-head">
+          <div>
+            <h2>Cost by model</h2>
+            <p id="modelNote" class="muted small"></p>
+          </div>
+        </header>
+        <div id="modelTable" class="table-wrap"></div>
+      </section>
+
+      <section class="card">
+        <header class="card-head">
+          <div>
+            <h2>Runs</h2>
+            <p class="muted small">Select a run to see its prompts, responses, images, tokens and cost.</p>
+          </div>
+          <div class="card-filters">
+            <label class="select">
+              <span class="sr-only">Status</span>
+              <select id="filterStatus">
+                <option value="">All statuses</option>
+                <option value="delivered">Delivered</option>
+                <option value="manual_review">Manual review</option>
+                <option value="rejected">Rejected</option>
+                <option value="error">Error</option>
+                <option value="running">Running</option>
+                <option value="queued">Queued</option>
+              </select>
+            </label>
+            <label class="select">
+              <span class="sr-only">Mode</span>
+              <select id="filterMode">
+                <option value="">All modes</option>
+                <option value="mock">Mock</option>
+                <option value="live">Live</option>
+              </select>
+            </label>
+          </div>
+        </header>
+        <div id="runsTable" class="table-wrap"></div>
+        <footer class="card-foot">
+          <span id="runsCount" class="muted small"></span>
+          <div class="pager">
+            <button id="prevPage" class="btn btn-ghost" type="button">Previous</button>
+            <button id="nextPage" class="btn btn-ghost" type="button">Next</button>
+          </div>
+        </footer>
+      </section>
+    </main>
+  </div>
+
+  <!-- Run detail drawer -->
+  <div id="drawer" class="drawer" hidden>
+    <div class="drawer-scrim" data-close></div>
+    <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+      <header class="drawer-head">
+        <div>
+          <h2 id="drawerTitle">Run</h2>
+          <p id="drawerSub" class="muted small mono"></p>
+        </div>
+        <div class="drawer-actions">
+          <button id="deleteRun" class="btn btn-danger" type="button">Delete</button>
+          <button class="btn btn-ghost" type="button" data-close aria-label="Close">Close</button>
+        </div>
+      </header>
+      <div id="drawerBody" class="drawer-body"></div>
+    </aside>
+  </div>
+
+  <!-- New test run -->
+  <div id="modal" class="modal" hidden>
+    <div class="drawer-scrim" data-close-modal></div>
+    <form id="runForm" class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <h2 id="modalTitle">New test run</h2>
+      <label class="field">
+        <span>Photo</span>
+        <input id="runFile" type="file" accept="image/jpeg,image/png,image/webp" required>
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span>Mode</span>
+          <select id="runMode">
+            <option value="mock">Mock (free)</option>
+            <option value="live">Live (billed)</option>
+          </select>
+        </label>
+        <label class="field" id="scenarioField">
+          <span>Mock scenario</span>
+          <select id="runScenario"></select>
+        </label>
+      </div>
+      <p id="scenarioHelp" class="muted small"></p>
+      <p id="runError" class="form-error" role="alert"></p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" type="button" data-close-modal>Cancel</button>
+        <button class="btn btn-primary" type="submit">Start run</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="tooltip" class="tooltip" role="status" hidden></div>
+  <script src="/admin/static/admin.js" type="module"></script>
+</body>
+</html>
