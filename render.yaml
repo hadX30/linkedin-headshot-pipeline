@@ -14,8 +14,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.6"
+      # live for production (needs the two model keys below); mock to try the deployment for free.
       - key: HEADSHOT_MODE
-        value: mock
+        sync: false
       # Render's disk is wiped on every deploy and restart, so traces and images must live in Supabase.
       - key: TRACE_STORE
         value: supabase
@@ -29,7 +30,7 @@ services:
         value: https://malameh-site.vercel.app
       - key: CORS_ORIGIN_REGEX
         value: https://malameh-site(-[a-z0-9-]+)?\.vercel\.app
-      # Only needed for live mode; leave empty to stay on mock.
+      # Needed for live mode.
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY

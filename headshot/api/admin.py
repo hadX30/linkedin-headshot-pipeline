@@ -15,12 +15,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .. import pricing
+from ..imaging import media_type_for
 from ..mock_data import SCENARIOS
 from ..pipeline import current_mode
 from .common import check_run_id, read_upload, start_run, state
 
 UI_DIR = Path(__file__).parent / "admin_ui"
-FILE_NAME = re.compile(r"^(input\.jpg|attempt-\d{1,2}\.png)$")
+FILE_NAME = re.compile(r"^(input\.(jpg|jpeg|png|webp|gif)|attempt-\d{1,2}\.png)$")
 
 
 def require_admin(request: Request) -> None:
@@ -58,11 +59,12 @@ def overview(request: Request, days: int = 30) -> dict:
             "llm_priced": pricing.is_priced(s.claude_model),
             "image": s.image_model,
             "image_priced": pricing.is_priced(s.image_model),
-            "image_size": s.image_size,
-            "image_quality": s.image_quality,
+            "image_size": s.generation_params["size"],
+            "image_quality": s.generation_params["quality"],
         },
-        "thresholds": s.thresholds.as_dict(),
-        "max_attempts": s.max_attempts,
+        "thresholds": dict(s.thresholds),
+        "max_attempts": s.max_retries,
+        "proposals": {"review_fail_safe": s.review_fail_safe, "image_send_input_fidelity": s.image_send_input_fidelity},
         "prices_checked_on": pricing.PRICES_CHECKED_ON,
         "days": days,
         "stats": app.store.stats(since),
@@ -121,8 +123,7 @@ def get_file(run_id: str, name: str, request: Request) -> Response:
     data = state(request).store.get_file(check_run_id(run_id), name)
     if data is None:
         raise HTTPException(status_code=404, detail="File not found")
-    media = "image/jpeg" if name.endswith(".jpg") else "image/png"
-    return Response(data, media_type=media, headers={"Cache-Control": "private, no-store"})
+    return Response(data, media_type=media_type_for(name), headers={"Cache-Control": "private, no-store"})
 
 
 @api.post("/runs", status_code=202)
@@ -136,7 +137,8 @@ async def create_test_run(
     if mode not in ("mock", "live"):
         raise HTTPException(status_code=422, detail="mode must be 'mock' or 'live'")
     raw = await read_upload(image, app.settings.max_upload_mb)
-    return start_run(app, raw, mode=mode, source="admin", scenario=scenario if mode == "mock" else None)
+    return start_run(app, raw, image.filename or "input.jpg", mode=mode, source="admin",
+                     scenario=scenario if mode == "mock" else None)
 
 
 @api.delete("/runs/{run_id}", status_code=204)

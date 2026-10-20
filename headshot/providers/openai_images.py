@@ -1,19 +1,19 @@
-"""Live Stage 3 provider: OpenAI GPT Image edits."""
+"""
+Live Stage 3: OpenAI image edit, with the same request the original ImageGenerator made
+(model, image, prompt, size, quality, n) and the same error wording.
+"""
 
 from __future__ import annotations
 
 import base64
 from typing import Any
 
-import openai
+from openai import OpenAI
 
 from ..settings import Settings
-from .base import CallResult, ImageInput, ProviderError
+from .base import CallResult, ImageInput
 
-_RETRYABLE = (openai.RateLimitError, openai.InternalServerError)
-
-# input_fidelity is documented for the gpt-image-1 family; newer models are not
-# documented to take it, so it is only sent where it is known to be accepted.
+# input_fidelity is documented for the gpt-image-1 family only.
 _FIDELITY_PREFIXES = ("gpt-image-1",)
 
 
@@ -21,65 +21,47 @@ class OpenAIImageEditor:
     provider = "openai"
 
     def __init__(self, settings: Settings):
-        if not settings.openai_api_key:
-            raise ProviderError("OPENAI_API_KEY is not set; live mode is unavailable.")
-        self.client = openai.OpenAI(api_key=settings.openai_api_key, timeout=300.0, max_retries=1)
+        self.client = OpenAI(api_key=settings.openai_api_key)
         self.model = settings.image_model
-        self.size = settings.image_size
-        self.quality = settings.image_quality
-        self.input_fidelity = settings.image_input_fidelity
+        self.params = settings.generation_params
+        self.send_input_fidelity = settings.image_send_input_fidelity  # proposal P2, off by default
 
     def request_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
             "model": self.model,
-            "size": self.size,
-            "quality": self.quality,
-            "output_format": "png",
-            "n": 1,
+            "size": self.params["size"],
+            "quality": self.params["quality"],
+            "n": self.params.get("n", 1),
         }
-        if self.input_fidelity and self.model.startswith(_FIDELITY_PREFIXES):
-            params["input_fidelity"] = self.input_fidelity
+        if self.send_input_fidelity and self.model.startswith(_FIDELITY_PREFIXES):
+            params["input_fidelity"] = self.params.get("input_fidelity", "high")
         return params
 
     def edit(self, *, image: ImageInput, prompt: str, attempt: int) -> CallResult:
         params = self.request_params()
         try:
             response = self.client.images.edit(
-                image=(f"{image.ref}.jpg", image.data, image.media_type),
+                image=(image.filename or f"{image.ref}.png", image.data, image.media_type),
                 prompt=prompt,
                 **params,
             )
-        except openai.APIStatusError as exc:
-            raise ProviderError(
-                f"OpenAI API error {exc.status_code}: {exc.message}",
-                retryable=isinstance(exc, _RETRYABLE),
-                details={"status": exc.status_code, "request_id": getattr(exc, "request_id", None)},
-            ) from exc
-        except openai.APIConnectionError as exc:
-            raise ProviderError(f"Could not reach the OpenAI API: {exc}", retryable=True) from exc
-
-        if not response.data or not response.data[0].b64_json:
-            raise ProviderError("OpenAI returned no image data.", retryable=True)
+            image_bytes = base64.b64decode(response.data[0].b64_json)
+        except Exception as e:  # same wrapping as the original ImageGenerator
+            raise RuntimeError(f"Image generation failed: {e}") from e
 
         usage: dict[str, int] = {}
-        if response.usage:
-            details = response.usage.input_tokens_details
+        if getattr(response, "usage", None):
+            details = getattr(response.usage, "input_tokens_details", None)
             usage = {
-                "text_input_tokens": (details.text_tokens if details else 0) or 0,
-                "image_input_tokens": (details.image_tokens if details else 0) or 0,
-                "output_tokens": response.usage.output_tokens or 0,
+                "text_input_tokens": (getattr(details, "text_tokens", 0) if details else 0) or 0,
+                "image_input_tokens": (getattr(details, "image_tokens", 0) if details else 0) or 0,
+                "output_tokens": getattr(response.usage, "output_tokens", 0) or 0,
             }
-
         return CallResult(
             provider=self.provider,
             model=self.model,
-            image=base64.b64decode(response.data[0].b64_json),
+            image=image_bytes,
             usage=usage,
             request_id=getattr(response, "_request_id", None),
-            raw={
-                "created": response.created,
-                "size": response.size,
-                "quality": response.quality,
-                "output_format": response.output_format,
-            },
+            raw={k: getattr(response, k, None) for k in ("created", "size", "quality", "output_format")},
         )

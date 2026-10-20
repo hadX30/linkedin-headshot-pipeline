@@ -1,14 +1,15 @@
 """
 Command line:
 
-    python -m headshot.cli run photo.jpg                 # uses HEADSHOT_MODE (default: mock)
-    python -m headshot.cli run photo.jpg --mode live     # real APIs, billed
-    python -m headshot.cli run photo.jpg --scenario retry_then_deliver
+    python -m headshot.cli run photo.jpg                 # HEADSHOT_MODE (default: live, billed)
+    python -m headshot.cli run photo.jpg --mode mock     # every stage mocked: no API calls, no cost
+    python -m headshot.cli run photo.jpg --mode mock --scenario retry_then_deliver
     python -m headshot.cli runs                          # recent runs
     python -m headshot.cli show <run_id>                 # one run with every call
     python -m headshot.cli stats --days 30               # cost and outcome summary
     python -m headshot.cli scenarios                     # mock scenarios
     python -m headshot.cli check-store                   # write, read back and delete a test run
+    python -m headshot.cli check-models                  # confirm both models exist for your keys (free)
 """
 
 from __future__ import annotations
@@ -19,13 +20,13 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .imaging import ImageTooSmall, InvalidImage
 from .mock_data import SCENARIOS
-from .pipeline import LiveUnavailable, create_run, current_mode, execute_run
+from .pipeline import LegacyOutput, LiveUnavailable, create_run, current_mode, execute_run
 from .settings import Settings
 from .store import build_store
 
-EXIT = {"delivered": 0, "manual_review": 1, "rejected": 1, "error": 2}
+# Original exit codes: 0 delivered/partial, 1 manual review, 2 error
+EXIT = {"delivered": 0, "partial": 0, "manual_review": 1, "error": 2}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,8 +35,11 @@ def main(argv: list[str] | None = None) -> int:
 
     run = sub.add_parser("run", help="Run the pipeline on one photo")
     run.add_argument("image", type=Path)
-    run.add_argument("--mode", choices=["mock", "live"], help="Default: the saved admin choice, else HEADSHOT_MODE")
+    run.add_argument("--mode", choices=["mock", "live"], help="Default: the saved admin choice, else HEADSHOT_MODE (live)")
     run.add_argument("--scenario", help="Mock scenario (see `scenarios`)")
+    run.add_argument("--mock-image", action="store_true", help="Live Claude stages with a stand-in image (the original --mock)")
+    run.add_argument("--stage", type=int, choices=[1, 2, 3, 4], default=4, help="Stop after this stage")
+    run.add_argument("--output-dir", type=Path, help="Also write the original output files here (default: OUTPUT_DIR)")
     run.add_argument("--json", action="store_true", help="Print the full run as JSON")
 
     runs = sub.add_parser("runs", help="List recent runs")
@@ -49,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("scenarios", help="List mock scenarios")
     sub.add_parser("check-store", help="Write, read back and delete a test run in the configured trace store")
+    sub.add_parser("check-models", help="Confirm the configured models exist for your API keys (no tokens used)")
 
     args = parser.parse_args(argv)
     settings = Settings.from_env()
@@ -80,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "check-store":
         return check_store(store)
+    if args.command == "check-models":
+        return check_models(settings)
     return 2
 
 
@@ -149,29 +156,59 @@ def _run(settings: Settings, store, args) -> int:
         return 2
     mode = args.mode or current_mode(settings, store)
     try:
-        run_id, image = create_run(settings, store, args.image.read_bytes(), mode=mode, source="cli", scenario=args.scenario)
-    except (InvalidImage, ImageTooSmall, LiveUnavailable, ValueError) as exc:
+        run_id = create_run(settings, store, args.image.read_bytes(), args.image.name, mode=mode, source="cli",
+                            scenario=args.scenario, mock_images=args.mock_image)
+    except (LiveUnavailable, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
-    print(f"Run {run_id}  mode={mode}  input={image.width}x{image.height}  store={store.kind}")
-    run = execute_run(settings, store, run_id)
+    print(f"Run {run_id}  mode={mode}{' (stand-in image)' if args.mock_image else ''}  store={store.kind}")
+    output = LegacyOutput(args.output_dir or settings.output_dir, args.image.name)
+    result = execute_run(settings, store, run_id, stop_after_stage=args.stage, output=output)
+    run = store.get_run(run_id)
     if args.json:
-        print(json.dumps({"run": run, "spans": store.list_spans(run_id)}, indent=2, ensure_ascii=False))
+        print(json.dumps({"result": result, "run": run, "spans": store.list_spans(run_id)}, indent=2, ensure_ascii=False))
     else:
         for span in store.list_spans(run_id):
-            cost = "—" if span["cost_usd"] is None else f"${span['cost_usd']:.4f}"
+            cost = "—" if span["cost_usd"] is None else f"${span['cost_usd']:.4f}{' est' if span['cost_estimated'] else ''}"
             mark = "✕" if span["status"] == "error" else "✓"
             print(f"  {mark} {span['stage']:9} try {span['attempt']}  {span['model']:24} {span['duration_ms']:>6} ms  {cost}")
         estimate = " (estimate)" if run["cost_estimated"] else ""
-        print(f"Result: {run['status']}  reason={run.get('reason')}  attempts={run['attempts']}  "
+        print(f"Result: {result['status']}  retries={result['retries']}  reason={run.get('reason')}  "
               f"cost=${run['cost_usd']:.4f}{estimate}  time={run['duration_ms']} ms")
-        if run.get("output_file"):
-            where = settings.data_dir / "runs" / run_id / run["output_file"] if store.kind == "sqlite" else run["output_file"]
-            print(f"Image: {where}")
-        if run.get("error"):
-            print(f"Error: {run['error']}")
-    return EXIT.get(run["status"], 2)
+        if result.get("generated_image"):
+            print(f"Output: {result['generated_image']}")
+        if result.get("error"):
+            print(f"Error: {result['error']}")
+    return EXIT.get(result["status"], 2)
+
+
+def check_models(settings: Settings) -> int:
+    """Look the configured models up with each provider's Models API (no tokens are used)."""
+    ok = True
+    if settings.anthropic_api_key:
+        import anthropic
+
+        try:
+            info = anthropic.Anthropic(api_key=settings.anthropic_api_key).models.retrieve(settings.claude_model)
+            print(f"  ✓ Anthropic: {settings.claude_model} available ({getattr(info, 'display_name', '')})")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ✕ Anthropic: {settings.claude_model}: {exc}")
+            ok = False
+    else:
+        print("  - Anthropic: ANTHROPIC_API_KEY not set, skipped")
+    if settings.openai_api_key:
+        import openai
+
+        try:
+            openai.OpenAI(api_key=settings.openai_api_key).models.retrieve(settings.image_model)
+            print(f"  ✓ OpenAI: {settings.image_model} available")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ✕ OpenAI: {settings.image_model}: {exc}")
+            ok = False
+    else:
+        print("  - OpenAI: OPENAI_API_KEY not set, skipped")
+    return 0 if ok else 2
 
 
 if __name__ == "__main__":

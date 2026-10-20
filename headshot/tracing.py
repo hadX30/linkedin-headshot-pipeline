@@ -28,10 +28,14 @@ class SpanRecord:
 
 
 class Tracer:
-    def __init__(self, store: TraceStore, run_id: str, mode: str):
+    def __init__(self, store: TraceStore, run_id: str, mode: str, *, estimated: bool):
         self.store = store
         self.run_id = run_id
         self.mode = mode
+        # The run's total is either billed spend (live) or an estimate (mock), never a mix:
+        # in the original `--mock` mode (real Claude, stand-in image) the mock image's
+        # estimate is recorded on its span but not added to the billed total.
+        self.estimated = estimated
         self.seq = 0
         self.total_cost = 0.0
         self.unpriced_models: set[str] = set()
@@ -59,6 +63,9 @@ class Tracer:
         if usage and cost is None:
             self.unpriced_models.add(model)
 
+        provider = result.provider if result else provider
+        span_estimated = provider == "mock"
+
         response = dict(record.response)
         if result:
             response.setdefault("request_id", result.request_id)
@@ -73,7 +80,7 @@ class Tracer:
             "mode": self.mode,
             "stage": stage,
             "attempt": attempt,
-            "provider": result.provider if result else provider,
+            "provider": provider,
             "model": model,
             "status": status,
             "started_at": started_at,
@@ -83,12 +90,12 @@ class Tracer:
             "response": response or None,
             "usage": usage or None,
             "cost_usd": cost,
-            "cost_estimated": self.mode == "mock",
+            "cost_estimated": span_estimated,
             "error": error,
         }
         try:
             self.store.add_span(span)
-            if cost:
+            if cost and span_estimated == self.estimated:
                 self.total_cost = round(self.total_cost + cost, 6)
                 self.store.update_run(self.run_id, {"cost_usd": self.total_cost})
         except Exception:  # never let trace storage break the run itself

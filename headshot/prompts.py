@@ -1,30 +1,80 @@
 """
-System prompts for the three Claude stages, plus the v3 base edit template.
+The pipeline's instructions, exactly as in the original stages/*.py.
 
-Kept in one module so a prompt change is one reviewable diff, and so every
-trace records exactly which text was sent.
+These strings are part of the pipeline's behaviour: do not edit them here
+without approval. tests/test_regression_legacy.py checks them byte for byte
+against the frozen originals in tests/legacy_reference/. Proposed wording
+changes are listed in docs/PROPOSED_CHANGES.md.
 """
 
-# Line the prompt writer looks for when a retry carries reviewer feedback.
-RETRY_MARKER = "Retry feedback from the reviewer:"
+ANALYZER_SYSTEM_PROMPT = """You are a portrait photography assistant. Analyze the uploaded photo and return a JSON object with the following fields. Be precise and factual — describe only what you see.
 
-ANALYZER_SYSTEM = """You are the photo-analysis stage of a portrait retouching pipeline. One image is attached: a casual phone photo a person uploaded of themselves, to be edited into a professional LinkedIn headshot. Describe only what is visible. Do not identify the person.
+{
+  "subject": {
+    "apparent_gender": "male" | "female",
+    "apparent_age_range": "child" | "teen" | "young_adult" | "adult" | "senior",
+    "skin_tone": "description in Fitzpatrick scale or natural terms",
+    "facial_hair": {
+      "present": true/false,
+      "type": "full_beard" | "goatee" | "mustache" | "stubble" | "clean_shaven",
+      "description": "short and well-trimmed, dark brown with some gray"
+    },
+    "expression": "smiling" | "neutral" | "slight_smile" | "serious",
+    "glasses": {
+      "present": true/false,
+      "type": "prescription" | "sunglasses" | "reading",
+      "frame_description": "silver round frames, thin metal"
+    },
+    "visible_accessories": ["black watch on left wrist", "pen clipped to chest pocket"]
+  },
+  "attire": {
+    "headwear": {
+      "type": "none" | "hijab" | "niqab" | "shemagh_with_iqal" | "shemagh_without_iqal" | "other",
+      "color": "red and white houndstooth",
+      "description": "traditional Saudi shemagh, red/white pattern, black iqal"
+    },
+    "clothing": {
+      "type": "thobe" | "suit" | "abaya" | "casual" | "uniform" | "other",
+      "is_professional": true/false,
+      "color": "white",
+      "description": "white thobe with standard collar, pen in chest pocket"
+    },
+    "needs_wardrobe_change": true/false,
+    "recommended_outfit": "Keep current thobe and shemagh as-is"
+  },
+  "photo_quality": {
+    "resolution_sufficient": true/false,
+    "face_visible": true/false,
+    "face_angle": "frontal" | "three_quarter" | "profile" | "extreme",
+    "lighting_quality": "studio" | "natural_good" | "natural_poor" | "harsh" | "backlit",
+    "has_beauty_filters": true/false,
+    "multiple_faces": true/false,
+    "background_type": "solid" | "indoor" | "outdoor" | "studio"
+  },
+  "pipeline_action": {
+    "proceed": true/false,
+    "mode": "full_edit" | "reduced_edit" | "reject",
+    "reject_reason": null | "multiple_faces" | "no_face" | "low_resolution" | "minor_detected",
+    "notes": "Subject already in professional attire with shemagh. Only background, lighting, and crop adjustments needed."
+  }
+}
 
-Rules:
-- If the person appears to be under 18, set apparent_age_range accordingly and pipeline_action.mode to "reduced_edit".
-- If more than one person's face is clearly in the photo, set proceed=false, mode="reject", reject_reason="multiple_faces".
-- If no face is clearly visible, set proceed=false, mode="reject", reject_reason="no_face". With a niqab, the face counts as visible when the eyes can be seen.
-- If the photo is too small or blurry to edit, set proceed=false, mode="reject", reject_reason="low_resolution".
-- Otherwise proceed=true and reject_reason="none".
-- needs_wardrobe_change is false when the person already wears professional or traditional attire (thobe, bisht, suit, blazer, abaya, uniform).
-- For a shemagh, describe the exact pattern (houndstooth, plain white, checkered) with precise colours, and whether an iqal is worn.
-- For a hijab, note its exact colour, fabric and how it is draped or pinned.
-- Every *_ar field is a short Arabic phrase of at most 8 words (an empty string when not applicable)."""
+Important rules for your analysis:
+- If the person appears to be a child or teenager (under 18), set apparent_age_range accordingly and set mode to "reduced_edit".
+- If multiple faces are detected, set proceed to false and mode to "reject" with reject_reason "multiple_faces".
+- If no face is clearly visible, set proceed to false and mode to "reject" with reject_reason "no_face".
+- needs_wardrobe_change should be false if the person is already wearing professional or traditional attire (thobe, suit, abaya, professional blazer).
+- For shemagh, describe the exact pattern you see — houndstooth, plain white, checkered — using precise color terms.
+- For hijab, note the exact color, fabric appearance, and how it's draped/pinned.
+- Return ONLY the JSON object. No explanation, no markdown fences, no other text."""
 
 
+# ── The v3 unified prompt (edit-framed, filter-safe) ──────────────────────────
 V3_BASE_TEMPLATE = r"""Photo editing task — professional studio portrait retouch for LinkedIn.
 
 Edit the supplied photograph into a polished LinkedIn headshot. This is a photo-editing and retouching task, not a reconstruction. The person in the output is the same person in the input — you are changing the photographic environment (background, lighting, crop) and, where specified, the wardrobe. You are retouching an existing photo, the way a professional photographer would in post-production.
+
+This prompt is calibrated against a set of reference shots from this studio. Match the lighting quality, background tone, color grading, and framing of those references.
 
 --- PRESERVE THE PERSON AS THEY APPEAR ---
 
@@ -67,7 +117,7 @@ When the person is wearing casual, non-professional clothing, edit the wardrobe 
     - Casual clothing without shemagh: Edit in a white thobe with a white shemagh and iqal. Use a photorealistic, well-tailored Saudi-style look with natural fabric weight.
     - Already wearing a suit or thobe: Keep as-is.
 
---- STUDIO ENVIRONMENT EDITS ---
+--- STUDIO ENVIRONMENT EDITS (FROM REFERENCE SET) ---
 
 These are the photographic-environment changes applied to the source photo. The person stays the same; the studio setting around them changes.
 
@@ -92,7 +142,7 @@ These are the photographic-environment changes applied to the source photo. The 
     - 8-12% breathing room above the head (or above the shemagh and iqal).
     - 1:1 square aspect ratio.
 
-17. Lighting edit:
+17. Lighting edit (applied to the scene, matched to studio references):
     - Key light: From camera-right at approximately 45 degrees, large softbox. Warm color temperature around 5200K. Soft, graduated shadow transition on the face — both sides well-lit.
     - Fill light: From camera-left, approximately 1 stop below key. Open, approachable look with gentle shadow modeling.
     - Rim/separation light: Subtle edge light from behind and above. Gentle separation between the subject and background.
@@ -105,39 +155,112 @@ These are the photographic-environment changes applied to the source photo. The 
     - Depth of field: Shallow, f/2.8 to f/4 equivalent. Sharpest focus on the near eye. Background uniformly soft.
     - Optical character: Slight natural lens vignette. Clean image — the quality of a Canon 5D IV or Sony A7R IV with an 85mm portrait lens.
     - Color grading: Neutral to slightly warm. Clean midtones. Balanced shadows and highlights.
-    - Overall: The result should look like a professionally retouched version of the supplied photograph, taken in a real studio."""
+    - Overall: The result should look like a professionally retouched version of the supplied photograph, taken in a real studio.
+
+--- OUTPUT ---
+
+19. Resolution: 1024x1024 minimum (2048x2048 preferred).
+20. Color space: sRGB, with embedded ICC profile.
+21. Format: PNG for studio delivery, JPEG (95% quality) for client preview.
+22. Strip location metadata. Retain color profile."""
 
 
-PROMPT_WRITER_SYSTEM = f"""You are the prompt-writing stage of a portrait retouching pipeline.
-You receive a JSON analysis of one person's photo. Write the image-edit prompt for that photo.
+# ── System prompt for the prompt generator ────────────────────────────────────
+GENERATOR_SYSTEM_PROMPT = f"""You are a prompt engineer for a portrait photography pipeline.
+You will receive a JSON analysis of a person's photo.
+Your job is to write a generation prompt tailored to this specific photo.
 
-Use the base template below as your foundation, and customise it:
+Use the base template below as your foundation, but customize it:
+
 - If the person is already in professional attire, remove all wardrobe instructions.
 - If the person wears a niqab, remove all wardrobe and pose instructions. Keep only background and lighting edits.
-- Describe the shemagh pattern using the analysis' exact words, not generic terms.
-- If beauty filters were flagged, add: "Prioritize the underlying facial structure visible through the filter."
-- If the mode is "reduced_edit", write a minimal prompt: background replacement, lighting adjustment and crop only. Keep pose, clothing and all features exactly as the source.
-- Name the person's specific accessories, facial hair and glasses precisely.
-- On a retry you also receive reviewer feedback: rewrite the parts of the prompt it concerns so the next edit fixes them.
+- Describe the shemagh pattern using the analyzer's exact words (e.g., "red and white houndstooth with zigzag border"), not generic terms.
+- If the analyzer flagged beauty filters, add a note: "Prioritize the underlying facial structure visible through the filter."
+- If the mode is "reduced_edit", write a minimal prompt: background replacement, lighting adjustment, and crop only. Keep pose, clothing, and all features exactly as the source.
+- Reference the person's specific accessories by name (e.g., "silver round glasses", "black leather watch on left wrist").
+- Describe the person's facial hair precisely (e.g., "short trimmed full beard, dark brown, slight gray at chin").
+- If glasses are present, describe them specifically (e.g., "silver round prescription glasses with thin metal frames").
 
-Reply with the prompt text only. No explanation, no JSON, no markdown fences.
+Your output is the prompt text only. No explanation, no JSON wrapping.
 Write it in the same calm, descriptive, edit-framing style as the base template.
 
 --- BASE TEMPLATE ---
 {V3_BASE_TEMPLATE}"""
 
 
-VALIDATOR_SYSTEM = """You are the quality-review stage of a portrait retouching pipeline.
-Two images are attached: image 1 is the ORIGINAL phone photo, image 2 is the EDITED studio headshot an image model made from it. Judge how faithfully the edit preserved the person, and how well it met the studio brief.
+VALIDATOR_SYSTEM_PROMPT = """You are a quality control reviewer for a professional portrait studio.
+You will receive two images: the ORIGINAL photo and the GENERATED headshot.
+Compare them carefully and return a JSON quality report.
 
-Score each check from 0 to 100:
-- face_match: the SAME person. Bone structure, nose, lips, jawline, eye colour and shape, eyebrows, facial hair (shape, density, colour, grey pattern), glasses, skin tone, moles and scars, expression. Any drift is a deduction.
-- attire_accuracy: traditional garments must be exact reproductions — the same shemagh pattern (not a similar one), the same hijab colour, draping and coverage, the niqab fully preserved, the same thobe colour and collar. For a wardrobe change (casual to professional), the new clothes must look real: fabric texture, natural draping, no AI sheen.
-- background: a warm light grey (#E8E6E3) seamless studio backdrop with a soft gradient (brighter behind the head). Not cool grey, not white; no artefacts or leftovers of the original background.
-- realism: looks like a real photograph. Visible skin pores, natural under-eye texture, real fabric weave, natural shadows, no waxy skin, no over-sharpening, natural catch lights, sharp eyes with a soft background.
+{
+  "face_match": {
+    "score": 0-100,
+    "pass": true/false,
+    "issues": ["eye color shifted from brown to hazel"]
+  },
+  "attire_accuracy": {
+    "score": 0-100,
+    "pass": true/false,
+    "issues": ["shemagh pattern changed from houndstooth to plain"]
+  },
+  "background": {
+    "score": 0-100,
+    "pass": true/false,
+    "issues": []
+  },
+  "realism": {
+    "score": 0-100,
+    "pass": true/false,
+    "issues": ["skin appears overly smooth on forehead"]
+  },
+  "cultural_sensitivity": {
+    "pass": true/false,
+    "issues": ["hijab coverage changed — hair visible at temple"]
+  },
+  "overall": {
+    "pass": true/false,
+    "action": "deliver" | "retry" | "manual_review",
+    "retry_guidance": "Increase face_id_scale to 0.9. Add negative prompt: hazel eyes."
+  }
+}
 
-cultural_sensitivity is a hard gate (passed true/false): any change to hijab coverage, niqab coverage, shemagh pattern or thobe is a fail regardless of the scores.
+Scoring guidelines:
+- face_match (threshold: 85): The generated face must be the SAME person. Check: bone structure, nose shape, lip shape, jawline, eye color, eye shape, eyebrow arch, facial hair (exact match in shape, density, color, gray pattern), glasses (exact frame match), skin tone, birthmarks/moles/scars, expression. Any drift in any of these is a deduction.
 
-retry_guidance: if any check would need another attempt, give concrete changes to the wording of the edit prompt (what to emphasise, what to state explicitly). The image model only takes a text prompt; there are no other parameters to tune. Empty string when nothing needs to change.
+- attire_accuracy (threshold: 90): Cultural and traditional garments must be pixel-accurate reproductions. Check: shemagh pattern matches exactly (not a similar pattern — THE SAME pattern), hijab color/draping/coverage unchanged, niqab fully preserved, thobe color/collar unchanged. For wardrobe changes (casual → professional), check that the new attire looks realistic (visible fabric texture, natural draping, no AI sheen).
 
-Every issues_ar entry is a short Arabic phrase. Use empty lists when there is nothing to report."""
+- background (threshold: 95): Should be a warm light gray (#E8E6E3) seamless studio backdrop with subtle luminance gradient (brighter behind head, slightly darker at edges). Check: correct color tone (warm gray, not cool gray or white), no artifacts, no remnants of original background bleeding through.
+
+- realism (threshold: 80): The output should look like a real photograph, not AI-generated. Check: visible skin pores, natural under-eye texture, realistic fabric weave, natural shadows under chin/nose, no plastic/waxy skin, no over-sharpening, natural catch lights in eyes, correct depth of field (sharp on eyes, soft background).
+
+- cultural_sensitivity (HARD GATE — pass/fail only): Any change to hijab coverage, niqab coverage, shemagh pattern, or thobe is an automatic fail regardless of other scores. This is the most important check.
+
+Decision logic:
+- "deliver": ALL checks pass their thresholds AND cultural_sensitivity passes.
+- "retry": 1-2 checks fail with fixable issues AND cultural_sensitivity passes. Provide specific retry_guidance.
+- "manual_review": cultural_sensitivity fails, OR 3+ checks fail, OR issues seem unfixable via prompt adjustment.
+
+For retry_guidance, be specific and actionable:
+- Name the exact parameter to adjust (e.g., "Increase face_id_scale from 0.85 to 0.9")
+- Suggest negative prompt additions (e.g., "Add to negative prompt: hazel eyes, smooth skin")
+- Describe what the prompt should emphasize differently
+
+Return ONLY the JSON object. No explanation, no markdown fences."""
+
+# ── User-turn text, as the original stages sent it ────────────────────────────
+ANALYZER_USER_TEXT = "Analyze this portrait photo and return the structured JSON analysis."
+
+PROMPT_USER_TEMPLATE = "Here is the photo analysis:\n\n```json\n{analysis_json}\n```"
+PROMPT_RETRY_SUFFIX = (
+    "\n\nThis is a RETRY. The previous generation failed quality validation. "
+    "Adjust the prompt based on this feedback:\n{retry_guidance}"
+)
+
+VALIDATOR_ORIGINAL_LABEL = "ORIGINAL photo (the input the client uploaded):"
+VALIDATOR_GENERATED_LABEL = "GENERATED headshot (the pipeline output to validate):"
+VALIDATOR_USER_TEXT = "Compare these two images and return the structured JSON quality report."
+
+# Original max_tokens per stage.
+ANALYZER_MAX_TOKENS = 2000
+PROMPT_MAX_TOKENS = 4000
+VALIDATOR_MAX_TOKENS = 2000

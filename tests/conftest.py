@@ -26,9 +26,12 @@ def photo() -> bytes:
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
+    # Tests use mock mode explicitly; the production default is live.
     return dataclasses.replace(
         Settings(),
+        mode="mock",
         data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
         mock_latency_ms=0,
         admin_token="test-admin-token",
         rate_limit_per_hour=1000,

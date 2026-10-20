@@ -1,31 +1,23 @@
-"""Provider interfaces. Stages talk to these; live and mock implement them."""
+"""Provider interfaces. The stages talk to these; live and mock implement them."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TypeVar
-
-from pydantic import BaseModel
-
-T = TypeVar("T", bound=BaseModel)
-
-
-class ProviderError(RuntimeError):
-    """A provider call failed. `retryable` tells the pipeline whether a retry can help."""
-
-    def __init__(self, message: str, *, retryable: bool = False, details: dict | None = None):
-        super().__init__(message)
-        self.retryable = retryable
-        self.details = details or {}
+from typing import Any, Protocol, Union
 
 
 @dataclass
 class ImageInput:
-    """An image passed to a model, plus the name it is recorded under in traces."""
+    """An image passed to a model, sent byte-for-byte as stored (no re-encoding)."""
 
-    ref: str  # e.g. "input", "attempt-2"
+    ref: str          # name in traces, e.g. "input", "attempt-2"
     data: bytes
-    media_type: str
+    media_type: str   # from the file extension, exactly as the original stages did
+    filename: str = ""  # multipart filename for the image API
+
+
+# A message part: plain text or an image.
+Part = Union[str, ImageInput]
 
 
 @dataclass
@@ -35,7 +27,6 @@ class CallResult:
     provider: str
     model: str
     text: str = ""
-    parsed: Any = None
     image: bytes | None = None
     usage: dict[str, int] = field(default_factory=dict)
     request_id: str | None = None
@@ -47,17 +38,15 @@ class VisionLLM(Protocol):
     provider: str
     model: str
 
-    def structured(
-        self, *, system: str, text: str, images: list[ImageInput], schema: type[T], stage: str, attempt: int = 0
-    ) -> CallResult: ...
-
-    def write(self, *, system: str, text: str, stage: str, attempt: int = 0) -> CallResult: ...
+    def complete(self, *, system: str, content: list[Part], max_tokens: int, stage: str, attempt: int = 0) -> CallResult:
+        """Send one user turn; `text` is the reply's text, unstripped."""
 
 
 class ImageEditor(Protocol):
     provider: str
     model: str
 
-    def edit(self, *, image: ImageInput, prompt: str, attempt: int) -> CallResult: ...
+    def edit(self, *, image: ImageInput, prompt: str, attempt: int) -> CallResult:
+        """Edit `image` with `prompt`; `image` on the result is the generated PNG bytes."""
 
     def request_params(self) -> dict[str, Any]: ...

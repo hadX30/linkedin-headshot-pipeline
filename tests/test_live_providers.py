@@ -1,4 +1,4 @@
-"""Live providers with the SDK clients swapped for fakes: no network, no cost."""
+"""Live providers with the SDK clients swapped for fakes: request shapes, compatibility, errors."""
 
 import base64
 import dataclasses
@@ -6,116 +6,105 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from headshot.mock_data import PROFILES, SCENARIOS, analysis_for
-from headshot.providers.base import ImageInput, ProviderError
+from headshot.providers.base import ImageInput
 from headshot.providers.claude import ClaudeLLM
 from headshot.providers.openai_images import OpenAIImageEditor
-from headshot.schemas import Analysis
-
-
-def claude_response(text="", parsed=None, stop="end_turn"):
-    return NS(
-        id="msg_1", model="claude-sonnet-5-5", stop_reason=stop, stop_details=NS(category="cyber") if stop == "refusal" else None,
-        content=[NS(type="thinking", thinking=""), NS(type="text", text=text)], parsed_output=parsed,
-        usage=NS(input_tokens=1200, output_tokens=300, cache_creation_input_tokens=0, cache_read_input_tokens=900),
-        _request_id="req_1",
-    )
 
 
 @pytest.fixture
-def live_settings(settings):
+def live(settings):
     return dataclasses.replace(settings, anthropic_api_key="test", openai_api_key="test")
 
 
-def test_claude_structured_uses_parse_with_cached_system(live_settings):
-    llm = ClaudeLLM(live_settings)
-    analysis = analysis_for(sorted(PROFILES)[0], SCENARIOS["deliver"])
+def reply(text, *, thinking=False):
+    content = [NS(type="text", text=text)]
+    if thinking:
+        content.insert(0, NS(type="thinking", thinking="", signature="s"))
+    return NS(id="m", model="claude-sonnet-5-5", stop_reason="end_turn", content=content, _request_id="req_1",
+              usage=NS(input_tokens=10, output_tokens=5, cache_creation_input_tokens=0, cache_read_input_tokens=7))
+
+
+def test_claude_request_matches_the_original_shape(live):
+    llm = ClaudeLLM(dataclasses.replace(live, claude_model="claude-sonnet-4-20250514"))
     seen = {}
-
-    def parse(**kwargs):
-        seen.update(kwargs)
-        return claude_response(text=analysis.model_dump_json(), parsed=analysis)
-
-    llm.client = NS(messages=NS(parse=parse))
+    llm.client = NS(messages=NS(create=lambda **kw: seen.update(kw) or reply("{}")))
     img = ImageInput("input", b"\xff\xd8jpeg", "image/jpeg")
-    result = llm.structured(system="SYS", text="Analyse", images=[img], schema=Analysis, stage="analyze")
-
-    assert seen["output_format"] is Analysis
-    assert seen["model"] == "claude-sonnet-5-5"
-    assert seen["system"][0]["cache_control"] == {"type": "ephemeral"}
+    result = llm.complete(system="SYS", content=[img, "Analyze"], max_tokens=2000, stage="analyze")
+    assert seen["model"] == "claude-sonnet-4-20250514" and seen["max_tokens"] == 2000  # original limit kept
+    assert seen["system"] == [{"type": "text", "text": "SYS", "cache_control": {"type": "ephemeral"}}]
     block = seen["messages"][0]["content"][0]
-    assert block["source"]["media_type"] == "image/jpeg"
-    assert base64.b64decode(block["source"]["data"]) == img.data
-    assert result.parsed is analysis
-    assert result.usage == {"input_tokens": 1200, "output_tokens": 300, "cache_write_tokens": 0, "cache_read_tokens": 900}
-    assert result.request_id == "req_1"
+    assert block["source"]["media_type"] == "image/jpeg" and base64.b64decode(block["source"]["data"]) == img.data
+    assert seen["messages"][0]["content"][1] == {"type": "text", "text": "Analyze"}
+    assert "temperature" not in seen and "thinking" not in seen
+    assert result.usage["cache_read_tokens"] == 7 and result.request_id == "req_1"
 
 
-def test_claude_fallback_without_structured_outputs(live_settings):
-    llm = ClaudeLLM(dataclasses.replace(live_settings, claude_structured_outputs=False))
-    analysis = analysis_for("casual", SCENARIOS["deliver"])
-    llm.client = NS(messages=NS(create=lambda **kw: claude_response(text="```json\n" + analysis.model_dump_json() + "\n```")))
-    result = llm.structured(system="SYS", text="x", images=[], schema=Analysis, stage="analyze")
-    assert result.parsed == analysis
-
-
-def test_claude_refusal_and_truncation_raise(live_settings):
-    llm = ClaudeLLM(live_settings)
-    llm.client = NS(messages=NS(create=lambda **kw: claude_response(text="no", stop="refusal")))
-    with pytest.raises(ProviderError, match="declined"):
-        llm.write(system="S", text="T", stage="prompt")
-    llm.client = NS(messages=NS(create=lambda **kw: claude_response(text="partial", stop="max_tokens")))
-    with pytest.raises(ProviderError) as err:
-        llm.write(system="S", text="T", stage="prompt")
-    assert err.value.retryable
-
-
-def test_claude_write_strips_fences_and_sends_effort(live_settings):
-    llm = ClaudeLLM(dataclasses.replace(live_settings, claude_effort="medium"))
+def test_single_text_part_is_sent_as_a_plain_string(live):
+    llm = ClaudeLLM(live)
     seen = {}
+    llm.client = NS(messages=NS(create=lambda **kw: seen.update(kw) or reply("ok")))
+    llm.complete(system="S", content=["only text"], max_tokens=4000, stage="prompt")
+    assert seen["messages"][0]["content"] == "only text"
 
-    def create(**kwargs):
-        seen.update(kwargs)
-        return claude_response(text="```\nEdit the photo.\n```")
 
-    llm.client = NS(messages=NS(create=create))
-    assert llm.write(system="S", text="T", stage="prompt").text == "Edit the photo."
+def test_thinking_models_get_room_and_text_is_read_after_thinking(live):
+    llm = ClaudeLLM(live)  # claude-sonnet-5-5 by default
+    seen = {}
+    llm.client = NS(messages=NS(create=lambda **kw: seen.update(kw) or reply("answer", thinking=True)))
+    assert llm.complete(system="S", content=["x"], max_tokens=2000, stage="analyze").text == "answer"
+    assert seen["max_tokens"] == 16000
+
+
+def test_effort_is_sent_only_when_configured(live):
+    llm = ClaudeLLM(dataclasses.replace(live, claude_effort="medium"))
+    seen = {}
+    llm.client = NS(messages=NS(create=lambda **kw: seen.update(kw) or reply("x")))
+    llm.complete(system="S", content=["x"], max_tokens=2000, stage="analyze")
     assert seen["output_config"] == {"effort": "medium"}
 
 
+def test_claude_errors_are_not_rewrapped(live):
+    """The pipeline reports `Stage N failed: <the SDK's own message>`, as before."""
+    llm = ClaudeLLM(live)
+
+    def fail(**kw):
+        raise RuntimeError("overloaded")
+
+    llm.client = NS(messages=NS(create=fail))
+    with pytest.raises(RuntimeError, match="^overloaded$"):
+        llm.complete(system="S", content=["x"], max_tokens=10, stage="analyze")
+
+
 def image_response():
-    return NS(
-        created=1, size="1024x1024", quality="medium", output_format="png", _request_id="req_img",
-        data=[NS(b64_json=base64.b64encode(b"PNGDATA").decode())],
-        usage=NS(output_tokens=1056, input_tokens_details=NS(text_tokens=900, image_tokens=1100)),
-    )
+    return NS(created=1, size="1024x1024", quality="medium", output_format="png", _request_id="req_img",
+              data=[NS(b64_json=base64.b64encode(b"PNGDATA").decode())],
+              usage=NS(output_tokens=1056, input_tokens_details=NS(text_tokens=900, image_tokens=1100)))
 
 
-def test_openai_edit_params_and_usage(live_settings):
-    editor = OpenAIImageEditor(live_settings)
+def test_image_request_matches_the_original_parameters(live):
+    editor = OpenAIImageEditor(live)
     seen = {}
-
-    def edit(**kwargs):
-        seen.update(kwargs)
-        return image_response()
-
-    editor.client = NS(images=NS(edit=edit))
-    result = editor.edit(image=ImageInput("input", b"jpeg", "image/jpeg"), prompt="P", attempt=1)
-    assert seen["model"] == "gpt-image-2.5-sunburst"
-    assert seen["image"] == ("input.jpg", b"jpeg", "image/jpeg")
-    assert seen["output_format"] == "png" and seen["quality"] == "medium" and seen["size"] == "1024x1024"
-    assert "input_fidelity" not in seen  # not documented for 2.5 models
+    editor.client = NS(images=NS(edit=lambda **kw: seen.update(kw) or image_response()))
+    result = editor.edit(image=ImageInput("input", b"jpeg", "image/jpeg", "photo.jpg"), prompt="P", attempt=1)
+    assert seen == {"image": ("photo.jpg", b"jpeg", "image/jpeg"), "prompt": "P", "model": "gpt-image-2.5-sunburst",
+                    "size": "1024x1024", "quality": "medium", "n": 1}
     assert result.image == b"PNGDATA"
     assert result.usage == {"text_input_tokens": 900, "image_input_tokens": 1100, "output_tokens": 1056}
 
 
-def test_openai_sends_input_fidelity_for_gpt_image_1(live_settings):
-    editor = OpenAIImageEditor(dataclasses.replace(live_settings, image_model="gpt-image-1"))
-    assert editor.request_params()["input_fidelity"] == "high"
+def test_image_errors_keep_the_original_wording(live):
+    editor = OpenAIImageEditor(live)
+
+    def fail(**kw):
+        raise RuntimeError("content policy")
+
+    editor.client = NS(images=NS(edit=fail))
+    with pytest.raises(RuntimeError, match="^Image generation failed: content policy$"):
+        editor.edit(image=ImageInput("input", b"x", "image/jpeg"), prompt="P", attempt=1)
 
 
-def test_live_providers_refuse_without_keys(settings):
-    with pytest.raises(ProviderError):
-        ClaudeLLM(settings)
-    with pytest.raises(ProviderError):
-        OpenAIImageEditor(settings)
+def test_proposal_p2_input_fidelity_only_when_enabled_and_supported(live):
+    assert "input_fidelity" not in OpenAIImageEditor(dataclasses.replace(live, image_model="gpt-image-1")).request_params()
+    on = dataclasses.replace(live, image_send_input_fidelity=True)
+    assert OpenAIImageEditor(dataclasses.replace(on, image_model="gpt-image-1")).request_params()["input_fidelity"] == "high"
+    assert "input_fidelity" not in OpenAIImageEditor(on).request_params()  # not documented for 2.5 models

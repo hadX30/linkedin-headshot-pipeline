@@ -43,7 +43,7 @@ const compact = (v) => (v == null ? "—" : Intl.NumberFormat("en-US", { notatio
 const pct = (v) => (v == null ? "—" : `${Math.round(v * 100)}%`);
 const ms = (v) => (v == null ? "—" : v < 1000 ? `${Math.round(v)} ms` : `${(v / 1000).toFixed(1)} s`);
 const when = (iso) => (iso ? new Date(iso).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—");
-const STATUS_LABEL = { delivered: "Delivered", manual_review: "Manual review", rejected: "Rejected", error: "Error", running: "Running", queued: "Queued" };
+const STATUS_LABEL = { delivered: "Delivered", manual_review: "Manual review", partial: "Partial", error: "Error", running: "Running", queued: "Queued" };
 const STAGE_LABEL = { analyze: "1 · Analyze", prompt: "2 · Prompt", generate: "3 · Generate", validate: "4 · Validate" };
 const statusEl = (s) => h("span", { class: `status status-${s}` }, STATUS_LABEL[s] || s);
 const modeChip = (m) => h("span", { class: `chip ${m === "live" ? "chip-live" : ""}` }, m === "live" ? "Live" : "Mock");
@@ -393,14 +393,14 @@ async function renderRun(id, first = false) {
     fact(run.cost_estimated ? "Cost (estimate)" : "Cost (billed)", usd(run.cost_usd)),
     fact("Duration", ms(run.duration_ms)),
     fact("Started", when(run.created_at)),
-    fact("Input", run.input ? `${run.input.width}×${run.input.height} ${run.input.source_format}` : "—"),
+    fact("Input", run.input ? `${run.input.width ?? "?"}×${run.input.height ?? "?"} ${run.input.format ?? ""}`.trim() : "—"),
   ));
   if (run.reason && run.status !== "delivered") body.push(h("p", { class: "callout" }, `Reason: ${run.reason}`));
   if (run.error) body.push(h("p", { class: "callout callout-error" }, run.error));
 
   // images
   const attempts = run.result?.attempts || [];
-  const files = [{ name: "input.jpg", label: "Input", note: "" }];
+  const files = [{ name: run.input?.stored_as || "input.jpg", label: "Input", note: "" }];
   for (const a of attempts) if (a.file) files.push({ name: a.file, label: `Attempt ${a.attempt}`, note: a.action === "deliver" ? "Delivered" : a.action === "retry" ? "Retried" : a.action === "manual_review" ? "Manual review" : "" });
   const gallery = h("div", { class: "gallery" });
   body.push(section("Images", gallery));
@@ -468,9 +468,12 @@ function spanEl(s) {
   const parts = [];
   const req = s.request || {};
   if (req.system) parts.push(codeBlock("System prompt", req.system));
-  if (req.text) parts.push(codeBlock("User message", req.text));
+  const content = Array.isArray(req.content) ? req.content : [];
+  const userText = content.filter((p) => p.text).map((p) => p.text).join("\n\n");
+  if (userText) parts.push(codeBlock("User message", userText));
   if (req.prompt) parts.push(codeBlock("Image prompt", req.prompt));
-  const meta = { images: req.images, schema: req.schema, params: req.params };
+  const images = content.filter((p) => p.image).map((p) => `${p.image} (${p.media_type})`);
+  const meta = { images: images.length ? images : undefined, image: req.image, max_tokens: req.max_tokens, params: req.params };
   if (Object.values(meta).some((v) => v != null)) parts.push(codeBlock("Request details", JSON.stringify(meta, null, 2)));
   const res = s.response || {};
   if (res.text) parts.push(codeBlock("Response text", res.text));
