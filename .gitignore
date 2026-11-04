@@ -16,5 +16,7 @@ data/
 # Tooling
 .pytest_cache/
 
+#test files
+test_images/
 # OS
 .DS_Store
