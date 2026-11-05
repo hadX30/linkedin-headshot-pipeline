@@ -20,7 +20,11 @@ class JobRunner:
 
     def recover(self) -> None:
         """Runs left queued/running by a previous process will never finish; close them."""
-        count = self.store.fail_unfinished("Interrupted: the server restarted before this run finished.")
+        try:
+            count = self.store.fail_unfinished("Interrupted: the server restarted before this run finished.")
+        except Exception:  # an unreachable store must not stop the server from starting
+            log.exception("Trace store unreachable at startup (%s); unfinished runs were not closed", self.store.kind)
+            return
         if count:
             log.warning("Marked %d unfinished run(s) as error after restart", count)
 

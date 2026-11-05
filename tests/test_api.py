@@ -198,3 +198,13 @@ def test_admin_overview_mode_switch_and_delete(client, photo):
     assert client.put("/admin/api/settings", json={"mode": "live"}, headers=ADMIN).status_code == 409
     assert client.delete(f"/admin/api/runs/{run_id}", headers=ADMIN).status_code == 204
     assert client.get(f"/v1/runs/{run_id}").status_code == 404
+
+
+def test_server_starts_when_the_store_is_unreachable(settings, store, monkeypatch, caplog):
+    def unreachable(reason):
+        raise ConnectionError("Name or service not known")
+
+    monkeypatch.setattr(store, "fail_unfinished", unreachable)
+    with TestClient(create_app(settings, store)) as c:
+        assert c.get("/health").json() == {"status": "ok"}
+    assert "Trace store unreachable at startup" in caplog.text
