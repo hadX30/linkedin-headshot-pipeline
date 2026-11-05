@@ -45,6 +45,23 @@ const ms = (v) => (v == null ? "—" : v < 1000 ? `${Math.round(v)} ms` : `${(v 
 const when = (iso) => (iso ? new Date(iso).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—");
 const STATUS_LABEL = { delivered: "Delivered", manual_review: "Manual review", partial: "Partial", error: "Error", running: "Running", queued: "Queued" };
 const STAGE_LABEL = { analyze: "1 · Analyze", prompt: "2 · Prompt", generate: "3 · Generate", validate: "4 · Validate" };
+const CHECKS = { face_match: "Face match", attire_accuracy: "Attire", realism: "Realism", background: "Background" };
+// Why a run ended as it did (the runner reads it from the pipeline's result). Older runs used the earlier rules.
+const REASON = {
+  deliverable: ["delivered", "The selected candidate cleared every floor, the cultural check and the delivery bar."],
+  floors: ["below a floor", "No candidate cleared every hard floor; the best one goes to manual review."],
+  below_bar: ["below the bar", "No candidate's weighted score reached the delivery bar; the best one goes to manual review."],
+  cultural: ["cultural check", "The best candidate failed the cultural check; it goes to manual review."],
+  analyzer_rejected: ["photo rejected", "The analyzer rejected the photo, so nothing was generated."],
+  no_candidates: ["no candidate", "No candidate finished generation and review."],
+  passed: ["passed (earlier rules)", "Passed every check under the earlier rules."],
+  multiple_checks: ["3+ checks failed (earlier rules)", "Three or more checks failed under the earlier rules."],
+  max_attempts: ["attempts used up (earlier rules)", "Attempts ran out under the earlier rules."],
+};
+const VERDICT = {
+  deliver: ["Deliverable", "pass"], retry: ["Not deliverable", "fail"], manual_review: ["Cultural fail", "fail"],
+  generation_failed: ["Image call failed", "fail"], review_failed: ["Review failed", "fail"], pending: ["Reviewing…", "muted"],
+};
 const statusEl = (s) => h("span", { class: `status status-${s}` }, STATUS_LABEL[s] || s);
 const modeChip = (m) => h("span", { class: `chip ${m === "live" ? "chip-live" : ""}` }, m === "live" ? "Live" : "Mock");
 
@@ -129,6 +146,7 @@ async function loadOverview() {
     state.overview = o;
     renderHeader(o);
     renderTiles(o);
+    renderRules(o.rules);
     renderDaily(o);
     renderStages(o.stats.by_stage);
     renderModels(o);
@@ -159,8 +177,26 @@ function renderTiles(o) {
     tile("Live spend", usd(s.cost.live_usd, 2), `${usd(s.cost.avg_per_delivered_live)} per delivered`),
     tile("Mock estimate", usd(s.cost.mock_estimated_usd, 2), `${usd(s.cost.avg_per_delivered_mock)} per delivered`),
     tile("Avg duration", ms(s.avg_duration_ms), "upload to final state"),
-    tile("Avg attempts", s.avg_attempts == null ? "—" : String(s.avg_attempts), `max ${o.max_attempts}`),
+    tile("Avg candidates", s.avg_attempts == null ? "—" : String(s.avg_attempts), `max ${o.rules.max_candidates} per run`),
   );
+}
+
+// The pipeline's decision rules, as config.py defines them.
+function renderRules(r) {
+  const pctw = (w) => (w == null ? "—" : `${Math.round(w * 100)}%`);
+  $("#rulesNote").textContent = `A candidate is delivered when it clears every hard floor, passes the cultural check, and its weighted score reaches ${r.deliver_at}. `
+    + `Up to ${r.max_candidates} candidates per photo; the loop stops at the first deliverable one, otherwise the best one goes to manual review. `
+    + "Ideal scores are reported, not required. Values come from config.py.";
+  const order = Object.keys(CHECKS).sort((a, b) => (r.weights[b] || 0) - (r.weights[a] || 0));
+  $("#rulesTable").replaceChildren(table(
+    [["Check"], ["Weight", "num"], ["Hard floor", "num"], ["Ideal", "num"]],
+    [
+      ...order.map((k) => [CHECKS[k], pctw(r.weights[k]), r.floors[k] ?? "—", r.ideal[k] ?? "—"]),
+      ["Cultural check", "—", "must pass", "—"],
+      [h("strong", {}, "Weighted score"), "100%", h("strong", {}, `≥ ${r.deliver_at}`), "—"],
+    ],
+    "",
+  ));
 }
 
 // Daily cost: grouped columns (live, mock) per day. Not stacked: billed + estimated must not add up.
@@ -304,7 +340,7 @@ async function loadRuns() {
   $("#runsTable").classList.add("is-loading");
   try {
     const { runs, total } = await api(`/runs?${q}`);
-    const cols = [["Time"], ["Mode"], ["Status"], ["Scenario / reason"], ["Attempts", "num"], ["Duration", "num"], ["Cost", "num"]];
+    const cols = [["Time"], ["Mode"], ["Status"], ["Scenario / reason"], ["Candidates", "num"], ["Duration", "num"], ["Cost", "num"]];
     if (!runs.length) {
       $("#runsTable").replaceChildren(h("p", { class: "empty" }, "No runs yet. Upload a photo on the website or start a test run."));
     } else {
@@ -318,7 +354,7 @@ async function loadRuns() {
           h("td", {}, when(r.created_at)),
           h("td", {}, modeChip(r.mode)),
           h("td", {}, statusEl(r.status)),
-          h("td", { class: "muted" }, [r.scenario, r.reason].filter(Boolean).join(" · ") || "—"),
+          h("td", { class: "muted" }, [r.scenario?.replaceAll("_", " "), REASON[r.reason]?.[0] || r.reason].filter(Boolean).join(" · ") || "—"),
           h("td", { class: "num" }, int(r.attempts)),
           h("td", { class: "num" }, ms(r.duration_ms)),
           h("td", { class: "num" }, usd(r.cost_usd), h("span", { class: "est", title: r.cost_estimated ? "Estimate: mock run, not billed" : "" }, r.cost_estimated ? "est." : "")),
@@ -382,32 +418,37 @@ async function renderRun(id, first = false) {
   const finished = ["delivered", "manual_review", "rejected", "error"].includes(run.status);
 
   $("#drawerTitle").replaceChildren(h("span", {}, "Run "), statusEl(run.status));
-  $("#drawerSub").textContent = `${run.id} · from ${run.source}`;
+  $("#drawerSub").textContent = `${run.id} · from ${run.source} · ${when(run.created_at)}`;
 
+  const candidates = candidatesOf(run);
+  const selected = candidates.find((c) => c.selected);
   const body = [];
   body.push(h("div", { class: "facts" },
     fact("Mode", run.mode === "live" ? "Live (billed)" : "Mock (free)"),
     fact("Scenario", run.scenario ? run.scenario.replaceAll("_", " ") : "—"),
     fact("Stage", finished ? "Finished" : (STAGE_LABEL[run.stage] || "Queued")),
-    fact("Attempts", int(run.attempts)),
+    fact("Candidates", int(run.attempts)),
+    fact("Selected", selected ? `Candidate ${selected.attempt}${selected.composite != null ? ` · ${selected.composite}` : ""}` : "—"),
     fact(run.cost_estimated ? "Cost (estimate)" : "Cost (billed)", usd(run.cost_usd)),
     fact("Duration", ms(run.duration_ms)),
-    fact("Started", when(run.created_at)),
     fact("Input", run.input ? `${run.input.width ?? "?"}×${run.input.height ?? "?"} ${run.input.format ?? ""}`.trim() : "—"),
   ));
-  if (run.reason && run.status !== "delivered") body.push(h("p", { class: "callout" }, `Reason: ${run.reason}`));
+  if (finished && run.reason) body.push(h("p", { class: "callout" }, REASON[run.reason]?.[1] || `Reason: ${run.reason}`));
   if (run.error) body.push(h("p", { class: "callout callout-error" }, run.error));
 
   // images
-  const attempts = run.result?.attempts || [];
   const files = [{ name: run.input?.stored_as || "input.jpg", label: "Input", note: "" }];
-  for (const a of attempts) if (a.file) files.push({ name: a.file, label: `Attempt ${a.attempt}`, note: a.action === "deliver" ? "Delivered" : a.action === "retry" ? "Retried" : a.action === "manual_review" ? "Manual review" : "" });
+  for (const c of candidates) {
+    if (!c.file) continue;
+    const score = c.composite != null ? `score ${c.composite}` : (VERDICT[c.action]?.[0] || "");
+    files.push({ name: c.file, label: `Candidate ${c.attempt}${c.selected ? " ★ selected" : ""}`, note: score, selected: c.selected });
+  }
   const gallery = h("div", { class: "gallery" });
   body.push(section("Images", gallery));
   files.forEach((f) => gallery.append(shot(run.id, f)));
 
   // reviews
-  if (attempts.some((a) => a.checks)) body.push(section("Quality review", reviewTable(attempts)));
+  if (candidates.length) body.push(section("Candidates", candidateTable(candidates)));
 
   // analysis
   if (run.analysis) body.push(section("Stage 1 analysis", codeBlock("analysis.json", JSON.stringify(run.analysis, null, 2))));
@@ -438,19 +479,56 @@ function shot(runId, f) {
     img.src = url;
     btn.addEventListener("click", () => window.open(url, "_blank", "noopener"));
   }).catch(() => { img.alt = "Image unavailable"; });
-  return h("figure", { class: "shot" }, btn, h("figcaption", {}, h("span", {}, f.label), h("span", {}, f.note)));
+  return h("figure", { class: `shot${f.selected ? " is-selected" : ""}` }, btn, h("figcaption", {}, h("span", {}, f.label), h("span", {}, f.note)));
 }
 
-function reviewTable(attempts) {
-  const rows = attempts.filter((a) => a.checks);
-  const names = { face_match: "Face match", attire_accuracy: "Attire", background: "Background", realism: "Realism" };
-  const cell = (c) => h("span", { class: c.passed ? "pass" : "fail" }, `${c.passed ? "✓" : "✕"} ${c.score}`);
-  const head = [["Check"], ["Threshold", "num"], ...rows.map((a) => [`Attempt ${a.attempt}`, "num"])];
-  const body = Object.keys(names).map((k) => [names[k], String(rows[0].checks[k].threshold), ...rows.map((a) => cell(a.checks[k]))]);
-  body.push(["Cultural gate", "pass/fail", ...rows.map((a) => h("span", { class: a.cultural.passed ? "pass" : "fail" }, a.cultural.passed ? "✓ Pass" : "✕ Fail"))]);
-  body.push(["Decision", "", ...rows.map((a) => `${a.action}${a.reason && a.reason !== "passed" ? ` (${a.reason})` : ""}`)]);
+// Candidates as the runner records them; runs from before the best-of-N pipeline kept `attempts`.
+function candidatesOf(run) {
+  const r = run.result || {};
+  if (r.candidates) return r.candidates;
+  return (r.attempts || []).map((a) => ({
+    attempt: a.attempt, file: a.file, action: a.action === "generation_failed" ? "generation_failed" : a.action,
+    composite: null, selected: false, guidance: a.guidance,
+    checks: a.checks && Object.fromEntries(Object.entries(a.checks).map(([k, c]) => [k, { score: c.score, passed: c.passed, ideal: c.threshold }])),
+    cultural: a.cultural,
+  }));
+}
+
+// One column per candidate: scores against floors, the weighted score against the bar, the verdict.
+function candidateTable(candidates) {
+  const rules = state.overview?.rules || { floors: {}, weights: {}, ideal: {} };
+  const pctw = (w) => (w == null ? "—" : `${Math.round(w * 100)}%`);
+  const scoreCell = (c) => {
+    if (!c || c.score == null) return h("span", { class: "muted" }, "—");
+    if (c.below_floor) return h("span", { class: "fail", title: "Below the hard floor" }, `✕ ${c.score}`);
+    if (c.passed === false) return h("span", { class: "weak", title: "Above the floor, below the ideal score" }, `· ${c.score}`);
+    return h("span", { class: "pass" }, `✓ ${c.score}`);
+  };
+  const head = [["Check"], ["Weight", "num"], ["Floor", "num"], ["Ideal", "num"],
+    ...candidates.map((c) => [h("span", { class: c.selected ? "selected-col" : "" }, `Candidate ${c.attempt}${c.selected ? " ★" : ""}`), "num"])];
+  const reviewed = (c) => Boolean(c.checks);
+  const body = Object.keys(CHECKS).map((k) => [CHECKS[k], pctw(rules.weights[k]), rules.floors[k] ?? "—", rules.ideal[k] ?? "—",
+    ...candidates.map((c) => (reviewed(c) ? scoreCell(c.checks[k]) : h("span", { class: "muted" }, "—")))]);
+  body.push(["Cultural check", "", "must pass", "", ...candidates.map((c) => (c.cultural
+    ? h("span", { class: c.cultural.passed ? "pass" : "fail" }, c.cultural.passed ? "✓ Pass" : "✕ Fail")
+    : h("span", { class: "muted" }, "—")))]);
+  body.push([h("strong", {}, "Weighted score"), "", rules.deliver_at != null ? `≥ ${rules.deliver_at}` : "", "",
+    ...candidates.map((c) => (c.composite == null ? h("span", { class: "muted" }, "—")
+      : h("strong", { class: c.action === "deliver" ? "pass" : "" }, String(c.composite))))]);
+  body.push(["Verdict", "", "", "", ...candidates.map((c) => {
+    const [label, cls] = VERDICT[c.action] || VERDICT.pending;
+    return h("span", { class: cls }, label);
+  })]);
   const wrap = h("div", { class: "table-wrap" }, table(head, body, ""));
-  const notes = rows.filter((a) => a.guidance).map((a) => codeBlock(`Attempt ${a.attempt} retry guidance`, a.guidance));
+  const notes = [];
+  for (const c of candidates) {
+    if (c.floors_failed?.length) notes.push(codeBlock(`Candidate ${c.attempt}: floors not met`, c.floors_failed.join("\n")));
+    if (c.error) notes.push(codeBlock(`Candidate ${c.attempt}: error`, c.error));
+    const issues = Object.entries(c.checks || {}).flatMap(([k, v]) => (v.issues || []).map((i) => `${CHECKS[k]}: ${i}`))
+      .concat((c.cultural?.issues || []).map((i) => `Cultural: ${i}`));
+    if (issues.length) notes.push(codeBlock(`Candidate ${c.attempt}: reviewer's issues`, issues.join("\n")));
+    if (c.guidance) notes.push(codeBlock(`Candidate ${c.attempt}: guidance for the next prompt`, c.guidance));
+  }
   return h("div", { class: "section" }, wrap, ...notes);
 }
 
@@ -459,7 +537,7 @@ function spanEl(s) {
   const tokensOut = s.usage ? s.usage.output_tokens || 0 : null;
   const summary = h("summary", {},
     h("span", { class: "span-seq" }, `#${s.seq}`),
-    h("span", {}, h("strong", {}, STAGE_LABEL[s.stage] || s.stage), s.attempt ? h("span", { class: "muted" }, ` · try ${s.attempt}`) : null),
+    h("span", {}, h("strong", {}, STAGE_LABEL[s.stage] || s.stage), s.attempt ? h("span", { class: "muted" }, ` · candidate ${s.attempt}`) : null),
     h("span", { class: "span-model", title: `${s.provider} · ${s.model}` }, `${s.provider} · ${s.model}`),
     h("span", { class: "span-num" }, s.status === "error" ? h("span", { class: "fail" }, "✕ Error") : ms(s.duration_ms)),
     h("span", { class: "span-num muted" }, tokensIn == null ? "—" : `${compact(tokensIn)} → ${compact(tokensOut)}`),

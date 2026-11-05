@@ -1,6 +1,7 @@
 """
-Configuration for the LinkedIn Headshot Pipeline (original module, kept for imports).
-All values now come from headshot.settings (environment variables / .env).
+Configuration for the LinkedIn Headshot Pipeline.
+API keys, model names, generation parameters and the output folder come from
+headshot.settings (environment variables / .env); the decision rules are below.
 """
 
 import os
@@ -21,13 +22,11 @@ OPENAI_IMAGE_MODEL = _settings.image_model
 GENERATION_PARAMS = dict(_settings.generation_params)
 
 # ── Validation Thresholds ─────────────────────────────────────────────────────
-VALIDATION_THRESHOLDS = dict(_settings.thresholds)
 # These mark IDEAL quality per check. They are reported in the QA record but
 # they are no longer the delivery bar on their own — see the delivery decision
 # block below. Requiring every check to independently clear its ideal score is
 # what caused the beta retry spiral: one unreachable check (background at 95)
 # forced regeneration of images that were already good.
-'''
 VALIDATION_THRESHOLDS = {
     "face_match": 85,
     "attire_accuracy": 90,
@@ -35,7 +34,6 @@ VALIDATION_THRESHOLDS = {
     "realism": 80,
     # cultural_sensitivity is pass/fail — no numeric threshold
 }
-'''
 # ── Delivery Decision ─────────────────────────────────────────────────────────
 # Two-layer decision. Layer 1: hard floors a candidate MUST clear. These are
 # correctness gates — below them the image is WRONG, not merely imperfect, and
@@ -95,7 +93,6 @@ COMPOSITE_DELIVER_THRESHOLD = 82
 EARLY_EXIT_COMPOSITE = COMPOSITE_DELIVER_THRESHOLD
 
 # ── Pipeline Settings ─────────────────────────────────────────────────────────
-MAX_RETRIES = _settings.max_retries
 OUTPUT_DIR = str(_settings.output_dir)
 # Upper bound on candidates, not a target. With the early exit above, a
 # deliverable first candidate ends the loop immediately, so the common case
@@ -104,12 +101,10 @@ OUTPUT_DIR = str(_settings.output_dir)
 # bar -- and every candidate is kept, so a worse later one can never displace a
 # better earlier one.
 N_CANDIDATES = 3
-'''
 # Retained for backward compatibility with older callers.
 MAX_RETRIES = N_CANDIDATES
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
 REFERENCE_IMAGES_DIR = os.path.join(os.path.dirname(__file__), "reference_images")
-'''
+
 # ── Reference Image Paths (populated at runtime) ─────────────────────────────
 REFERENCE_IMAGES = []
 if os.path.isdir(REFERENCE_IMAGES_DIR):

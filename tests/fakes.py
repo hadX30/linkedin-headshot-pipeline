@@ -1,8 +1,10 @@
 """
-Scripted stand-ins for the Anthropic and OpenAI clients, shared by the original
-(legacy) code and the new code in the regression tests. Each call takes the next
-scripted reply and records the request it was given, normalised so the two
-implementations can be compared exactly.
+Scripted stand-ins for the Anthropic and OpenAI clients. Each call takes the next
+scripted reply and records the request it was given, normalised (images by
+sha256) so two runs of the pipeline can be compared exactly.
+
+Like gpt-image-2.5-sunburst (FINDINGS.md), FakeOpenAI rejects input_fidelity, so
+stages/image_generator.py's drop-and-retry path runs on every generation.
 """
 
 from __future__ import annotations
@@ -40,10 +42,17 @@ class Script:
         cls.image_calls = []
 
 
-def _system_text(system) -> str:
-    if isinstance(system, list):  # the new code sends the same text as a cached block
-        return "".join(block["text"] for block in system)
-    return system
+def _normalise(content):
+    if isinstance(content, str):
+        return content
+    out = []
+    for block in content:
+        if block.get("type") == "image":
+            out.append({"type": "image", "media_type": block["source"]["media_type"],
+                        "sha": sha(base64.b64decode(block["source"]["data"]))})
+        else:
+            out.append(block)
+    return out
 
 
 class FakeAnthropic:
@@ -54,17 +63,15 @@ class FakeAnthropic:
         Script.claude_calls.append({
             "model": kwargs["model"],
             "max_tokens": kwargs["max_tokens"],
-            "system": _system_text(kwargs["system"]),
-            "messages": kwargs["messages"],
+            "system": kwargs["system"],
+            "messages": [{"role": m["role"], "content": _normalise(m["content"])} for m in kwargs["messages"]],
             "extra": sorted(k for k in kwargs if k not in ("model", "max_tokens", "system", "messages")),
         })
         item = Script.claude.pop(0)
         if "raise" in item:
             raise RuntimeError(item["raise"])
-        content = [NS(type="text", text=item["text"])]
-        if item.get("thinking_first"):
-            content.insert(0, NS(type="thinking", thinking="", signature="sig"))
-        return NS(id="msg_test", model=kwargs["model"], stop_reason="end_turn", content=content,
+        return NS(id="msg_test", model=kwargs["model"], stop_reason="end_turn", _request_id="req_test",
+                  content=[NS(type="thinking", thinking="", signature="sig"), NS(type="text", text=item["text"])],
                   usage=NS(input_tokens=100, output_tokens=50, cache_creation_input_tokens=0, cache_read_input_tokens=0))
 
 
@@ -74,12 +81,13 @@ class FakeOpenAI:
 
     def edit(self, **kwargs):
         image = kwargs["image"]
-        data = image[1] if isinstance(image, tuple) else image.read()
+        data = image.read()
         Script.image_calls.append({**{k: v for k, v in kwargs.items() if k != "image"}, "image_sha": sha(data)})
+        if "input_fidelity" in kwargs:
+            raise RuntimeError("Error code: 400 - Unknown parameter: 'input_fidelity'.")
         item = Script.images.pop(0)
         if "raise" in item:
             raise RuntimeError(item["raise"])
-        if item.get("no_data"):
-            return NS(data=[NS(b64_json=None)], usage=None)
-        return NS(data=[NS(b64_json=base64.b64encode(png(item["png"])).decode())], usage=None,
-                  created=0, size=kwargs.get("size"), quality=kwargs.get("quality"), output_format="png")
+        return NS(data=[NS(b64_json=base64.b64encode(png(item["png"])).decode())], created=0,
+                  size=kwargs.get("size"), quality=kwargs.get("quality"), output_format="png", _request_id="req_img",
+                  usage=NS(input_tokens_details=NS(text_tokens=300, image_tokens=800), output_tokens=1056))

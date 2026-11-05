@@ -1,9 +1,13 @@
 """
-Stage 3: Image Generator (original import path).
-Sends the tailored prompt + source photo to the image edit API.
+Stage 3: Image Generator
+Sends the tailored prompt + source photo to OpenAI's GPT Image API
+for face-preserving professional headshot generation.
+
+Uses the images.edit() endpoint — the source photo is passed as the
+reference image so the model preserves facial features, and the prompt
+describes the professional transformation to apply.
 """
 
-from headshot.compat import ImageGenerator, MockImageGenerator  # noqa: F401
 import os
 import base64
 

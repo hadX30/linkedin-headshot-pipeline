@@ -1,9 +1,10 @@
 """
-Stage 4: Quality Validator (original import path).
+Stage 4: Quality Validator
 Sends both the original photo and the generated headshot to Claude Vision
 for a side-by-side quality check. Returns structured QA JSON.
 """
 
+import base64
 import json
 import anthropic
 
@@ -426,8 +427,6 @@ def select_best_candidate(candidates: list[dict]) -> dict | None:
     winner["deliverable"] = False
     return winner
 
-from headshot.compat import QualityValidator
-from headshot.prompts import VALIDATOR_SYSTEM_PROMPT  # noqa: F401
 
 if __name__ == "__main__":
     import sys

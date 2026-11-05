@@ -16,8 +16,8 @@ from pydantic import BaseModel
 
 from .. import pricing
 from ..imaging import media_type_for
-from ..mock_data import SCENARIOS
-from ..pipeline import current_mode
+from ..mock import SCENARIOS
+from ..runner import current_mode, pipeline_models, pipeline_rules
 from .common import check_run_id, read_upload, start_run, state
 
 UI_DIR = Path(__file__).parent / "admin_ui"
@@ -50,21 +50,17 @@ def overview(request: Request, days: int = 30) -> dict:
     s = app.settings
     days = max(1, min(days, 365))
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    models = pipeline_models()
     return {
         "mode": current_mode(s, app.store),
         "live_available": s.live_available,
         "store": app.store.kind,
         "models": {
-            "llm": s.claude_model,
-            "llm_priced": pricing.is_priced(s.claude_model),
-            "image": s.image_model,
-            "image_priced": pricing.is_priced(s.image_model),
-            "image_size": s.generation_params["size"],
-            "image_quality": s.generation_params["quality"],
+            **models,
+            "llm_priced": pricing.is_priced(models["llm"]),
+            "image_priced": pricing.is_priced(models["image"]),
         },
-        "thresholds": dict(s.thresholds),
-        "max_attempts": s.max_retries,
-        "proposals": {"review_fail_safe": s.review_fail_safe, "image_send_input_fidelity": s.image_send_input_fidelity},
+        "rules": pipeline_rules(),
         "prices_checked_on": pricing.PRICES_CHECKED_ON,
         "days": days,
         "stats": app.store.stats(since),
