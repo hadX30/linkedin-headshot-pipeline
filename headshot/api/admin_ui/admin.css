@@ -305,3 +305,8 @@ pre {
 @media (forced-colors: active) {
   .status::before, .swatch, .chart .bar-1, .chart .bar-2 { forced-color-adjust: none; }
 }
+
+/* candidates: above the floor but below the ideal score; the selected one */
+.weak { color: var(--ink-2); font-weight: 600; }
+.selected-col { color: var(--accent); font-weight: 700; }
+.shot.is-selected button { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }

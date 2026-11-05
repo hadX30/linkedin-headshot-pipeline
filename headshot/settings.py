@@ -1,10 +1,12 @@
 """
 Runtime settings, read once from environment variables (and an optional .env file).
 
-Defaults reproduce the original pipeline: live API calls, the original thresholds,
-retry count and generation parameters. Mock mode must be enabled explicitly
-(HEADSHOT_MODE=mock). Proposed behaviour changes (docs/PROPOSED_CHANGES.md) have
-flags here and are all OFF unless set.
+The pipeline's decision rules (thresholds, hard floors, composite weights, delivery
+bar, number of candidates) live in config.py with the pipeline. This module holds
+what the environment decides: API keys, model names, generation parameters, the
+output folder, and everything the apps need (mode, trace store, API, admin).
+Live API calls are the default; mock mode must be enabled explicitly
+(HEADSHOT_MODE=mock).
 """
 
 from __future__ import annotations
@@ -29,13 +31,6 @@ def _env_int(name: str, default: int) -> int:
     return int(raw) if raw else default
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    raw = _env(name).lower()
-    if not raw:
-        return default
-    return raw in ("1", "true", "yes", "on")
-
-
 def _env_list(name: str, default: list[str]) -> list[str]:
     raw = _env(name)
     if not raw:
@@ -43,40 +38,26 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _original_thresholds() -> dict[str, int]:
-    # Original config.VALIDATION_THRESHOLDS. cultural_sensitivity is pass/fail (no number).
-    return {"face_match": 85, "attire_accuracy": 90, "background": 95, "realism": 80}
-
-
-def _original_generation_params() -> dict:
-    # Original config.GENERATION_PARAMS. Only model, size, quality and n were ever sent to
-    # the image API; output_format and input_fidelity were configured but not sent.
+def _default_generation_params() -> dict:
+    # config.GENERATION_PARAMS. stages/image_generator.py sends size, quality, n and
+    # input_fidelity (dropping input_fidelity when a model rejects it).
     return {"size": "1024x1024", "quality": "medium", "output_format": "png", "input_fidelity": "high", "n": 1}
 
 
 @dataclass(frozen=True)
 class Settings:
     # ── Mode ────────────────────────────────────────────────────────────────
-    # live = real API calls (the original behaviour, and the production default).
+    # live = real API calls (the production default).
     # mock = no API calls at all, for tests and demos; must be chosen explicitly.
     mode: str = "live"
 
-    # ── Models (configurable; changing them does not change pipeline logic) ──
+    # ── Read by config.py for the pipeline ──────────────────────────────────
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     claude_model: str = "claude-sonnet-5-5"
-    claude_effort: str = ""  # optional model tuning; empty = the model's default
     image_model: str = "gpt-image-2.5-sunburst"
-
-    # ── Original pipeline constants ─────────────────────────────────────────
-    generation_params: dict = field(default_factory=_original_generation_params)
-    thresholds: dict[str, int] = field(default_factory=_original_thresholds)
-    max_retries: int = 3
-    output_dir: Path = ROOT_DIR / "output"  # where the CLI writes the original output files
-
-    # ── Proposed behaviour changes: OFF unless approved (docs/PROPOSED_CHANGES.md) ──
-    review_fail_safe: bool = False           # P1: a missing review check counts as failed
-    image_send_input_fidelity: bool = False  # P2: send input_fidelity to models that accept it
+    generation_params: dict = field(default_factory=_default_generation_params)
+    output_dir: Path = ROOT_DIR / "output"  # where pipeline.py writes its output files
 
     # ── Mock mode ───────────────────────────────────────────────────────────
     mock_scenario: str = "auto"
@@ -94,8 +75,8 @@ class Settings:
     admin_token: str = ""
     cors_origins: list[str] = field(default_factory=list)
     cors_origin_regex: str = ""  # e.g. Vercel previews: https://malameh-site(-[a-z0-9-]+)?\.vercel\.app
-    max_upload_mb: int = 12      # applies to the new /v1/runs endpoint only
-    rate_limit_per_hour: int = 20  # applies to the new /v1/runs endpoint only
+    max_upload_mb: int = 12        # applies to /v1/runs only
+    rate_limit_per_hour: int = 20  # applies to /v1/runs only
     workers: int = 2
 
     @property
@@ -126,7 +107,7 @@ class Settings:
             value = Path(_env(name) or default)
             return value if value.is_absolute() else ROOT_DIR / value
 
-        params = _original_generation_params()
+        params = _default_generation_params()
         params["size"] = _env("IMAGE_SIZE", params["size"])
         params["quality"] = _env("IMAGE_QUALITY", params["quality"])
 
@@ -135,13 +116,9 @@ class Settings:
             anthropic_api_key=_env("ANTHROPIC_API_KEY"),
             openai_api_key=_env("OPENAI_API_KEY"),
             claude_model=_env("CLAUDE_MODEL", cls.claude_model),
-            claude_effort=_env("CLAUDE_EFFORT").lower(),
             image_model=_env("IMAGE_MODEL", cls.image_model),
             generation_params=params,
-            max_retries=_env_int("MAX_RETRIES", cls.max_retries),
             output_dir=path("OUTPUT_DIR", ROOT_DIR / "output"),
-            review_fail_safe=_env_bool("REVIEW_FAIL_SAFE", False),
-            image_send_input_fidelity=_env_bool("IMAGE_SEND_INPUT_FIDELITY", False),
             mock_scenario=_env("MOCK_SCENARIO", cls.mock_scenario),
             mock_latency_ms=_env_int("MOCK_LATENCY_MS", cls.mock_latency_ms),
             trace_store=trace_store,

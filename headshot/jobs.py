@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import Future, ThreadPoolExecutor
 
-from .pipeline import execute_run
+from .runner import execute_run
 from .settings import Settings
 from .store import TraceStore
 

@@ -3,7 +3,7 @@ Command line:
 
     python -m headshot.cli run photo.jpg                 # HEADSHOT_MODE (default: live, billed)
     python -m headshot.cli run photo.jpg --mode mock     # every stage mocked: no API calls, no cost
-    python -m headshot.cli run photo.jpg --mode mock --scenario retry_then_deliver
+    python -m headshot.cli run photo.jpg --mode mock --scenario floor_then_deliver
     python -m headshot.cli runs                          # recent runs
     python -m headshot.cli show <run_id>                 # one run with every call
     python -m headshot.cli stats --days 30               # cost and outcome summary
@@ -20,12 +20,12 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .mock_data import SCENARIOS
-from .pipeline import LegacyOutput, LiveUnavailable, create_run, current_mode, execute_run
+from .mock import SCENARIOS
+from .runner import LiveUnavailable, create_run, current_mode, execute_run
 from .settings import Settings
 from .store import build_store
 
-# Original exit codes: 0 delivered/partial, 1 manual review, 2 error
+# pipeline.py's exit codes: 0 delivered/partial, 1 manual review, 2 error
 EXIT = {"delivered": 0, "partial": 0, "manual_review": 1, "error": 2}
 
 
@@ -37,9 +37,10 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("image", type=Path)
     run.add_argument("--mode", choices=["mock", "live"], help="Default: the saved admin choice, else HEADSHOT_MODE (live)")
     run.add_argument("--scenario", help="Mock scenario (see `scenarios`)")
-    run.add_argument("--mock-image", action="store_true", help="Live Claude stages with a stand-in image (the original --mock)")
+    run.add_argument("--mock-image", action="store_true",
+                     help="Live Claude stages; the image stage copies the photo (pipeline.py --mock)")
     run.add_argument("--stage", type=int, choices=[1, 2, 3, 4], default=4, help="Stop after this stage")
-    run.add_argument("--output-dir", type=Path, help="Also write the original output files here (default: OUTPUT_DIR)")
+    run.add_argument("--output-dir", type=Path, help="Where the pipeline writes its output files (default: OUTPUT_DIR)")
     run.add_argument("--json", action="store_true", help="Print the full run as JSON")
 
     runs = sub.add_parser("runs", help="List recent runs")
@@ -162,24 +163,38 @@ def _run(settings: Settings, store, args) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
-    print(f"Run {run_id}  mode={mode}{' (stand-in image)' if args.mock_image else ''}  store={store.kind}")
-    output = LegacyOutput(args.output_dir or settings.output_dir, args.image.name)
-    result = execute_run(settings, store, run_id, stop_after_stage=args.stage, output=output)
+    print(f"Run {run_id}  mode={mode}{' (photo copied as the image)' if args.mock_image else ''}  store={store.kind}")
+    result = execute_run(settings, store, run_id, stop_after_stage=args.stage,
+                         output_dir=args.output_dir or settings.output_dir, verbose=not args.json)
     run = store.get_run(run_id)
     if args.json:
         print(json.dumps({"result": result, "run": run, "spans": store.list_spans(run_id)}, indent=2, ensure_ascii=False))
-    else:
-        for span in store.list_spans(run_id):
-            cost = "—" if span["cost_usd"] is None else f"${span['cost_usd']:.4f}{' est' if span['cost_estimated'] else ''}"
-            mark = "✕" if span["status"] == "error" else "✓"
-            print(f"  {mark} {span['stage']:9} try {span['attempt']}  {span['model']:24} {span['duration_ms']:>6} ms  {cost}")
-        estimate = " (estimate)" if run["cost_estimated"] else ""
-        print(f"Result: {result['status']}  retries={result['retries']}  reason={run.get('reason')}  "
-              f"cost=${run['cost_usd']:.4f}{estimate}  time={run['duration_ms']} ms")
-        if result.get("generated_image"):
-            print(f"Output: {result['generated_image']}")
-        if result.get("error"):
-            print(f"Error: {result['error']}")
+        return EXIT.get(result["status"], 2)
+
+    print("Calls:")
+    for span in store.list_spans(run_id):
+        cost = "—" if span["cost_usd"] is None else f"${span['cost_usd']:.4f}{' est' if span['cost_estimated'] else ''}"
+        mark = "✕" if span["status"] == "error" else "✓"
+        print(f"  {mark} {span['stage']:9} candidate {span['attempt']}  {span['model']:24} {span['duration_ms']:>6} ms  {cost}")
+    candidates = (run.get("result") or {}).get("candidates", [])
+    if candidates:
+        print("Candidates:")
+    for c in candidates:
+        marker = "←" if c.get("selected") else " "
+        if "composite" in c:
+            floors = "floors ok" if c.get("floors_pass") else "floors FAILED: " + ", ".join(c.get("floors_failed") or [])
+            cultural = "" if c["cultural"]["passed"] else ", cultural FAILED"
+            print(f"  {marker} {c['attempt']}: composite {c['composite']} ({floors}{cultural}) → {c.get('action')}")
+        else:
+            print(f"  {marker} {c['attempt']}: {c.get('action', 'pending')} {c.get('error', '')}".rstrip())
+    estimate = " (estimate)" if run["cost_estimated"] else ""
+    print(f"Result: {result['status']}  reason={run.get('reason')}  cost=${run['cost_usd']:.4f}{estimate}  "
+          f"time={run['duration_ms']} ms")
+    output = result.get("final_image") or result.get("generated_image")
+    if output:
+        print(f"Output: {output}")
+    if result.get("error"):
+        print(f"Error: {result['error']}")
     return EXIT.get(result["status"], 2)
 
 

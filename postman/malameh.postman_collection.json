@@ -28,7 +28,7 @@
           }
         },
         {
-          "name": "Config (mode, thresholds)",
+          "name": "Config (mode, decision rules)",
           "request": {
             "method": "GET",
             "header": [],
@@ -71,10 +71,10 @@
                 },
                 {
                   "key": "scenario",
-                  "value": "retry_then_deliver",
+                  "value": "floor_then_deliver",
                   "type": "text",
                   "disabled": true,
-                  "description": "Mock mode only: deliver, retry_then_deliver, manual_review, exhausted, rejected, generation_retry, generation_error"
+                  "description": "Mock mode only: deliver, floor_then_deliver, cultural_then_deliver, below_bar_then_deliver, no_deliverable, cultural_fail, rejected, generation_failure, review_failure, generation_error"
                 }
               ]
             }

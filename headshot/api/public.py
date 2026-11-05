@@ -1,10 +1,11 @@
 """
 Public endpoints.
 
-/health, POST /v1/headshots and GET /v1/headshots/{id}/image are the original API,
-with the original request handling, responses, status codes and messages.
+/health, POST /v1/headshots and GET /v1/headshots/{id}/image are the pipeline's
+own API (the contract of the team's api.py): the request runs the whole pipeline
+and returns its result; the image endpoint serves the selected candidate.
 
-/v1/config and /v1/runs are new and separate: the same pipeline, run in the
+/v1/config and /v1/runs are for the website: the same pipeline, run in the
 background and polled, with responses that leave out prompts, costs and the
 sensitive analysis fields.
 """
@@ -16,13 +17,13 @@ from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 
-from ..pipeline import create_run, current_mode, execute_run
+from ..runner import create_run, current_mode, execute_run, pipeline_rules
 from .common import ALLOWED_EXTENSIONS, UNSUPPORTED_TYPE, check_run_id, read_upload, start_run, state
 
 router = APIRouter()
 
 
-# ── Original API ──────────────────────────────────────────────────────────────
+# ── The pipeline's API ────────────────────────────────────────────────────────
 
 @router.get("/health")
 def health() -> dict:
@@ -48,15 +49,14 @@ def create_headshot(request: Request, image: UploadFile = File(...)) -> dict:
     mode = current_mode(app.settings, app.store)
     job_id = create_run(app.settings, app.store, b"".join(chunks), image.filename or f"input{suffix}",
                         mode=mode, source="api-v1", require_keys=False)
-    result = execute_run(app.settings, app.store, job_id)
+    execute_run(app.settings, app.store, job_id)
+    run = app.store.get_run(job_id) or {}
+    result = dict((run.get("result") or {}).get("pipeline") or {})
 
-    generated = result.get("generated_image")
-    image_url = None
-    if generated and app.store.get_file(job_id, generated) is not None:
-        image_url = f"/v1/headshots/{job_id}/image"
-
-    # Return an application-usable URL instead of exposing a server filesystem path.
-    result["generated_image"] = image_url
+    # Prefer the pipeline's selected winner over the raw last attempt, and return an
+    # application-usable URL instead of a server file name.
+    result["generated_image"] = f"/v1/headshots/{job_id}/image" if run.get("output_file") else None
+    result.pop("final_image", None)
     response = {"job_id": job_id, **result}
     if result.get("status") == "error":
         raise HTTPException(status_code=500, detail=response)
@@ -65,30 +65,31 @@ def create_headshot(request: Request, image: UploadFile = File(...)) -> dict:
 
 @router.get("/v1/headshots/{job_id}/image")
 def get_headshot_image(job_id: str, request: Request) -> Response:
-    """Retrieve the generated image for a pipeline run (latest attempt, including manual review)."""
+    """Retrieve the generated image for a pipeline run: the selected candidate."""
     try:
         safe_job_id = check_run_id(job_id)
     except HTTPException:
         raise HTTPException(status_code=404, detail="Headshot not found") from None
     app = state(request)
-    run = app.store.get_run(safe_job_id)
-    data = app.store.get_file(safe_job_id, run["output_file"]) if run and run.get("output_file") else None
+    run = app.store.get_run(safe_job_id) or {}
+    data = app.store.get_file(safe_job_id, run["output_file"]) if run.get("output_file") else None
     if data is None:
         raise HTTPException(status_code=404, detail="Generated headshot not found")
     return Response(data, media_type="image/png", headers={"Content-Disposition": 'attachment; filename="headshot.png"'})
 
 
-# ── New: background runs for the website ──────────────────────────────────────
+# ── For the website: background runs ──────────────────────────────────────────
 
 @router.get("/v1/config")
 def config(request: Request) -> dict:
     app = state(request)
-    s = app.settings
+    rules = pipeline_rules()
     return {
-        "mode": current_mode(s, app.store),
-        "max_upload_mb": s.max_upload_mb,
-        "max_attempts": s.max_retries,
-        "thresholds": dict(s.thresholds),
+        "mode": current_mode(app.settings, app.store),
+        "max_upload_mb": app.settings.max_upload_mb,
+        "max_attempts": rules["max_candidates"],
+        "thresholds": rules["ideal"],
+        "decision": {k: rules[k] for k in ("floors", "weights", "deliver_at", "max_candidates")},
     }
 
 
@@ -137,22 +138,24 @@ def image(run_id: str, request: Request) -> Response:
     })
 
 
-# ── view model for the new endpoint ───────────────────────────────────────────
+# ── view model for the website ────────────────────────────────────────────────
 
 def public_view(run: dict[str, Any]) -> dict[str, Any]:
     status = run["status"]
-    attempts = (run.get("result") or {}).get("attempts", [])
+    result = run.get("result") or {}
+    selected = (result.get("pipeline") or {}).get("selected_attempt")
     return {
         "id": run["id"],
         "status": status,
         "stage": run.get("stage"),
         "mode": run["mode"],
         "attempts": run.get("attempts", 0),
+        "selected_attempt": selected,
         "created_at": run["created_at"],
         "finished_at": run.get("finished_at"),
         "reason": run.get("reason"),
         "analysis": _public_analysis(run.get("analysis")),
-        "reviews": [_public_attempt(a) for a in attempts],
+        "reviews": [_public_candidate(c) for c in result.get("candidates", [])],
         "image_url": f"/v1/runs/{run['id']}/image" if status == "delivered" and run.get("output_file") else None,
         "error": "Processing failed. Please try again." if status == "error" else None,
     }
@@ -163,7 +166,7 @@ def _d(value: Any) -> dict:
 
 
 def _public_analysis(analysis: dict | None) -> dict | None:
-    """Read the original analyzer JSON defensively; Arabic text is not part of it (see P7)."""
+    """The analyzer's JSON, read defensively; Arabic text is not part of it."""
     if not isinstance(analysis, dict):
         return None
     attire, subject = _d(analysis.get("attire")), _d(analysis.get("subject"))
@@ -185,13 +188,28 @@ def _public_analysis(analysis: dict | None) -> dict | None:
     }
 
 
-def _public_attempt(attempt: dict) -> dict:
-    if attempt.get("action") == "generation_failed":
-        return {"attempt": attempt["attempt"], "action": "generation_failed"}
+def _public_candidate(c: dict) -> dict:
+    """One candidate as the website draws it: scores, floors, composite and the pipeline's verdict."""
+    base = {"attempt": c["attempt"], "selected": bool(c.get("selected"))}
+    if c.get("action") in ("generation_failed", "review_failed") or "checks" not in c:
+        return {**base, "action": c.get("action") or "pending"}
     return {
-        "attempt": attempt["attempt"],
-        "action": attempt.get("action"),
-        "checks": {name: {k: c.get(k) for k in ("score", "threshold", "passed", "issues_ar")}
-                   for name, c in attempt.get("checks", {}).items()},
-        "cultural": {"passed": attempt.get("cultural", {}).get("passed", True), "issues_ar": []},
+        **base,
+        "action": c.get("action"),
+        "composite": c.get("composite"),
+        "deliverable": c.get("action") == "deliver",
+        "checks": {
+            name: {
+                "score": check.get("score"),
+                "floor": check.get("floor"),
+                "weight": check.get("weight"),
+                "below_floor": bool(check.get("below_floor")),
+                # the ideal threshold and whether it was met: reported, not gating
+                "threshold": check.get("ideal"),
+                "passed": bool(check.get("passed")),
+                "issues_ar": [],
+            }
+            for name, check in (c.get("checks") or {}).items()
+        },
+        "cultural": {"passed": bool(c.get("cultural", {}).get("passed", True)), "issues_ar": []},
     }

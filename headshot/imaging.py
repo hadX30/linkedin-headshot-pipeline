@@ -85,7 +85,7 @@ def render_mock_headshot(source: bytes, *, attempt: int, label: str, size: int =
     img = Image.composite(img, Image.new("RGB", (size, size), STUDIO_GREY), mask)
 
     draw = ImageDraw.Draw(img)
-    text = f"MOCK · {label} · attempt {attempt}"
+    text = f"MOCK · {label} · candidate {attempt}"
     font = ImageFont.load_default(size=size // 40)
     pad = size // 64
     box = draw.textbbox((0, 0), text, font=font)

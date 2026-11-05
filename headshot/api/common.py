@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request, UploadFile
 
 from ..imaging import is_image
 from ..jobs import JobRunner
-from ..pipeline import LiveUnavailable, create_run
+from ..runner import LiveUnavailable, create_run
 from ..settings import Settings
 from ..store import TraceStore
 from .ratelimit import RateLimiter
