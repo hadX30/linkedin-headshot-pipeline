@@ -11,24 +11,16 @@ Usage:
     python pipeline.py <image_path> --mock             # Mock Stage 3 (no image API)
     python pipeline.py <image_path> --analyze-only     # Run Stage 1 only
     python pipeline.py <image_path> --stage 1          # Run up to stage N
-
-Same interface and behaviour as the original pipeline.py; the work is done by the
-headshot package, which also records a trace of every run. HEADSHOT_MODE=mock
-switches every stage to fixtures (no API calls) for testing.
 """
 
 import argparse
 import json
-import logging
 import os
 import shutil
 import sys
 import time
-from pathlib import Path
+from datetime import datetime
 
-from headshot.pipeline import LegacyOutput, create_run, execute_run
-from headshot.settings import Settings
-from headshot.store import build_store
 from config import (
     N_CANDIDATES,
     OUTPUT_DIR,
@@ -45,7 +37,6 @@ def log(stage: str, message: str) -> None:
     """Print a timestamped log message."""
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"  [{ts}] [{stage}] {message}")
-
 
 def run_pipeline(
     image_path: str,
@@ -79,17 +70,26 @@ def run_pipeline(
             retries: Extra generations used beyond the first
             error: Error message if status is "error" or "manual_review"
     """
+    out_dir = output_dir or OUTPUT_DIR
+    os.makedirs(out_dir, exist_ok=True)
+
+    result = {
+        "status": None,
+        "analysis": None,
+        "prompt": None,
+        "generated_image": None,
+        "validation": None,
+        "retries": 0,
+        "error": None,
+    }
+
+    # Generate a timestamp-based prefix for output files
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    basename = os.path.splitext(os.path.basename(image_path))[0]
+
+    # ── Stage 1: Photo Analyzer ───────────────────────────────────────────
     if verbose:
-        logging.basicConfig(level=logging.INFO, format="  [%(asctime)s] [%(name)s] %(message)s", datefmt="%H:%M:%S")
-    settings = Settings.from_env()
-    store = build_store(settings)
-    raw = Path(image_path).read_bytes()
-    run_id = create_run(settings, store, raw, os.path.basename(image_path), mode=settings.mode, source="cli",
-                        mock_images=mock_generation, require_keys=False)
-    output = LegacyOutput(Path(output_dir) if output_dir else settings.output_dir, image_path)
-    return execute_run(settings, store, run_id, stop_after_stage=stop_after_stage, output=output)
-'''
-    log("Stage 1", "Analyzing photo...")
+        log("Stage 1", "Analyzing photo...")
 
     try:
         analyzer = PhotoAnalyzer()
@@ -328,7 +328,6 @@ def run_pipeline(
             log("Pipeline", f"Best available: {result['final_image']}")
 
     return result
-'''
 
 def main():
     parser = argparse.ArgumentParser(

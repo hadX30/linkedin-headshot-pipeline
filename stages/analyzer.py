@@ -1,9 +1,10 @@
 """
-Stage 1: Photo Analyzer (original import path).
+Stage 1: Photo Analyzer
 Sends the uploaded photo to Claude Vision and extracts structured JSON
 describing the subject, attire, photo quality, and pipeline action.
 """
 
+import base64
 import json
 import anthropic
 
@@ -162,8 +163,6 @@ class PhotoAnalyzer:
 
         return analysis
 
-from headshot.compat import PhotoAnalyzer
-from headshot.prompts import ANALYZER_SYSTEM_PROMPT  # noqa: F401
 
 if __name__ == "__main__":
     import sys
